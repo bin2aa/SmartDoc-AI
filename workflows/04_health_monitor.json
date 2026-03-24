@@ -1,0 +1,107 @@
+{
+  "name": "SmartDocAI - Health Monitor",
+  "description": "Monitor SmartDocAI health every 5 minutes",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "unit": "minutes",
+        "interval": 5
+      },
+      "name": "Interval - Every 5 min",
+      "type": "n8n-nodes-base.interval",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8001/api/status",
+        "method": "GET"
+      },
+      "name": "HTTP - Check Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [500, 300],
+      "dependsOn": ["Interval - Every 5 min"]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "{{ $node['HTTP - Check Status'].json.is_vector_store_ready }}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "name": "If - Ready",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [750, 300],
+      "dependsOn": ["HTTP - Check Status"]
+    },
+    {
+      "parameters": {
+        "text": "✅ SmartDocAI is healthy\\n- Vector Store: Ready\\n- Documents: {{ $node['HTTP - Check Status'].json.documents_loaded }}\\n- Ollama: {{ $node['HTTP - Check Status'].json.ollama_status }}\\n- Uptime: {{ Math.round($node['HTTP - Check Status'].json.uptime_seconds / 3600) }} hours"
+      },
+      "name": "Slack - Send Health Report",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1000, 200],
+      "dependsOn": ["If - Ready"]
+    },
+    {
+      "parameters": {
+        "text": "⚠️ SmartDocAI Alert\\n- Vector Store: {{ $node['HTTP - Check Status'].json.is_vector_store_ready ? 'Ready' : 'DOWN' }}\\n- Ollama: {{ $node['HTTP - Check Status'].json.ollama_status }}\\n\nImmediate action required!"
+      },
+      "name": "Slack - Send Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1000, 400],
+      "dependsOn": ["If - Ready"]
+    }
+  ],
+  "connections": {
+    "Interval - Every 5 min": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Check Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Check Status": {
+      "main": [
+        [
+          {
+            "node": "If - Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If - Ready": {
+      "main": [
+        [
+          {
+            "node": "Slack - Send Health Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack - Send Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
