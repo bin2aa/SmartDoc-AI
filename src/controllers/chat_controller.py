@@ -4,10 +4,12 @@ from typing import Optional, List, Tuple
 import streamlit as st
 from src.services.llm_service import AbstractLLMService, OllamaLLMService
 from src.services.vector_store_service import AbstractVectorStoreService
+from src.services.n8n_service import N8NWebhookService
 from src.models.chat_model import ChatHistory
 from src.models.document_model import Document
 from src.utils.logger import setup_logger
 from src.utils.exceptions import LLMConnectionError, VectorStoreError
+from src.utils.constants import DEFAULT_STREAMLIT_REPLY_TEMPLATES, NO_INFO_MARKERS
 
 logger = setup_logger(__name__)
 
@@ -22,7 +24,8 @@ class ChatController:
     def __init__(
         self,
         llm_service: Optional[AbstractLLMService] = None,
-        vector_service: Optional[AbstractVectorStoreService] = None
+        vector_service: Optional[AbstractVectorStoreService] = None,
+        n8n_service: Optional[N8NWebhookService] = None,
     ):
         """
         Initialize chat controller.
@@ -34,6 +37,7 @@ class ChatController:
         # Dependency injection with defaults
         self.llm_service = llm_service or OllamaLLMService()
         self.vector_service = vector_service
+        self.n8n_service = n8n_service
         
         logger.info("ChatController initialized")
     
@@ -126,3 +130,57 @@ ANSWER:"""
         if 'chat_history' in st.session_state:
             st.session_state.chat_history.clear()
             logger.info("Chat history cleared")
+
+    def format_reply_for_streamlit(self, answer: str, sources: List[Document]) -> str:
+        """
+        Format assistant reply for Streamlit using intro/body/footer templates.
+
+        Args:
+            answer: Raw answer from LLM
+            sources: Retrieved source documents
+
+        Returns:
+            Formatted text for Streamlit UI
+        """
+        templates = st.session_state.get('reply_templates', DEFAULT_STREAMLIT_REPLY_TEMPLATES)
+        found_template = templates.get('found', DEFAULT_STREAMLIT_REPLY_TEMPLATES['found'])
+        not_found_template = templates.get('not_found', DEFAULT_STREAMLIT_REPLY_TEMPLATES['not_found'])
+
+        normalized_answer = (answer or '').strip().lower()
+        has_no_info_marker = any(marker in normalized_answer for marker in NO_INFO_MARKERS)
+        has_answer = bool((answer or '').strip()) and (not has_no_info_marker) and bool(sources)
+
+        selected = found_template if has_answer else not_found_template
+        parts: List[str] = [selected.get('intro', '').strip()]
+
+        if has_answer:
+            parts.append((answer or '').strip())
+
+        body = selected.get('body', '').strip()
+        if body:
+            parts.append(body)
+
+        footer = selected.get('footer', '').strip()
+        if footer:
+            parts.append(footer)
+
+        # Filter empty parts and keep spacing predictable in chat bubbles.
+        return "\n\n".join([part for part in parts if part])
+
+    def notify_n8n_chat_event(
+        self,
+        question: str,
+        formatted_answer: str,
+        raw_answer: str,
+        sources: List[Document],
+    ) -> bool:
+        """Send current chat interaction to n8n webhook when integration is enabled."""
+        if self.n8n_service is None:
+            return False
+
+        return self.n8n_service.send_chat_event(
+            question=question,
+            formatted_answer=formatted_answer,
+            raw_answer=raw_answer,
+            sources=sources,
+        )

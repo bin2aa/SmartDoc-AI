@@ -1,15 +1,27 @@
+# DÒNG QUAN TRỌNG NHẤT: Ép pip chỉ tải PyTorch bản CPU siêu nhẹ (~150MB)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # Streamlit and UI
 streamlit>=1.41.1
+
+# FastAPI for N8N Integration
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+pydantic>=2.0.0
 
 # LangChain Framework
 langchain>=0.3.16
 langchain-community>=0.3.16
+langchain-ollama>=0.1.0
+langchain-huggingface>=0.0.1
 
 # LLM and Embeddings
+# Dòng này sẽ ngầm gọi torch, nhưng nhờ dòng đầu tiên, nó sẽ gọi bản CPU
 sentence-transformers>=2.2.2
 
 # Vector Database
-faiss-cpu>=1.9.0
+faiss-cpu==1.13.0
 
 # Document Loaders
 pdfplumber>=0.11.0
@@ -19,3 +31,7 @@ docx2txt>=0.8
 numpy>=1.24.0
 pandas>=2.0.0
 python-dateutil>=2.8.0
+
+# Production Server (optional)
+gunicorn>=21.0.0
+

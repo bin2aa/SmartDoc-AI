@@ -6,6 +6,7 @@ from src.controllers.chat_controller import ChatController
 from src.views.components import UIComponents
 from src.models.document_model import Document
 from src.utils.logger import setup_logger
+from src.utils.exceptions import LLMConnectionError
 
 logger = setup_logger(__name__)
 
@@ -67,7 +68,7 @@ class ChatScreen:
             return
         
         # Display messages
-        for message in chat_history.messages:
+        for msg_idx, message in enumerate(chat_history.messages):
             avatar = "🧑" if message.role == "user" else "🤖"
             self.components.chat_message(
                 role=message.role,
@@ -77,23 +78,24 @@ class ChatScreen:
             
             # Display sources if available
             if message.role == "assistant" and message.metadata and message.metadata.get('sources'):
-                self._render_sources(message.metadata['sources'])
+                self._render_sources(message.metadata['sources'], msg_idx)
     
-    def _render_sources(self, sources: List[Document]):
+    def _render_sources(self, sources: List[Document], msg_idx: int):
         """
         Render source citations.
         
         Args:
             sources: List of source documents
+            msg_idx: Message index for unique key generation
         """
         with st.expander("📚 View Sources"):
-            for idx, source in enumerate(sources, 1):
-                st.markdown(f"**Source {idx}:** {source.get_citation()}")
+            for src_idx, source in enumerate(sources, 1):
+                st.markdown(f"**Source {src_idx}:** {source.get_citation()}")
                 st.text_area(
-                    f"Context {idx}",
+                    f"Context {src_idx}",
                     value=source.content[:300] + "..." if len(source.content) > 300 else source.content,
                     height=100,
-                    key=f"source_{idx}_{hash(source.content[:50])}",
+                    key=f"source_msg{msg_idx}_src{src_idx}",
                     disabled=True
                 )
     
@@ -107,8 +109,29 @@ class ChatScreen:
             with self.components.loading_spinner("🤔 Thinking..."):
                 try:
                     answer, sources = self.controller.process_query(prompt)
-                    self._add_assistant_message(answer, sources)
+                    formatted_answer = self.controller.format_reply_for_streamlit(answer, sources)
+                    self.controller.notify_n8n_chat_event(
+                        question=prompt,
+                        formatted_answer=formatted_answer,
+                        raw_answer=answer,
+                        sources=sources,
+                    )
+                    self._add_assistant_message(formatted_answer, sources)
                     st.rerun()
+                except LLMConnectionError as e:
+                    logger.error(f"LLM error while processing query: {e}")
+                    self.components.error_alert(
+                        "Khong du RAM de chay model hien tai",
+                        details=(
+                            f"{str(e)}\n\n"
+                            "Goi y giam RAM:\n"
+                            "1) Vao tab Settings -> LLM Configuration\n"
+                            "2) Chon model nhe da duoc cai trong may\n"
+                            "3) Giam num_ctx xuong 256 va num_predict xuong 64\n"
+                            "4) Dat keep_alive = 0m de giai phong RAM sau moi cau hoi\n"
+                            "5) Neu model chua co, pull truoc: ollama pull <model_name>"
+                        ),
+                    )
                 except Exception as e:
                     logger.error(f"Error processing query: {e}")
                     self.components.error_alert(
