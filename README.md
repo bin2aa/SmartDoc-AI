@@ -35,5 +35,6 @@ ollama pull qwen2.5:7b
 
 **Bước 4: Khởi chạy ứng dụng**
 ```bash
+pip install streamlit
 streamlit run app.py
 ```
