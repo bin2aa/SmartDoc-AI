@@ -1,13 +1,12 @@
 """Document controller for handling document operations."""
 
-import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 from src.services.document_service import DocumentService
 from src.services.vector_store_service import AbstractVectorStoreService
 from src.utils.logger import setup_logger
-from src.utils.exceptions import DocumentLoadError, ValidationError
+from src.utils.exceptions import DocumentLoadError
 from src.utils.constants import UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB
 
 logger = setup_logger(__name__)
@@ -52,40 +51,72 @@ class DocumentController:
             if not self._validate_file(uploaded_file):
                 return False
             
-            # Save file
-            file_path = self._save_uploaded_file(uploaded_file)
-            logger.info(f"Saved file to {file_path}")
-            
-            # Load and chunk document
-            try:
-                documents = self.document_service.load_document(file_path)
-                logger.info(f"Loaded {len(documents)} chunks from document")
-            except DocumentLoadError as e:
-                st.error(f"❌ Cannot load document: {str(e)}")
-                return False
-            
-            # Store in vector database
-            if self.vector_service:
-                try:
-                    self.vector_service.add_documents(documents)
-                    st.success(f"✅ Successfully processed {len(documents)} chunks from {uploaded_file.name}")
-                    
-                    # Update session state
-                    st.session_state.vector_store_initialized = True
-                    
-                    return True
-                except Exception as e:
-                    logger.error(f"Vector store error: {e}")
-                    st.error(f"❌ Vector store error: {str(e)}")
-                    return False
-            else:
-                st.error("❌ Vector store not initialized")
-                return False
+            result = self.upload_and_process_many([uploaded_file])
+            return result["success_count"] == 1
                 
         except Exception as e:
             logger.exception("Unexpected error in upload_and_process")
             st.error(f"❌ Unexpected error: {str(e)}")
             return False
+
+    def upload_and_process_many(self, uploaded_files: List[Any]) -> Dict[str, Any]:
+        """Upload and process multiple documents in one action."""
+        if not uploaded_files:
+            return {"success_count": 0, "failed": []}
+
+        if self.vector_service is None:
+            st.error("❌ Vector store not initialized")
+            return {"success_count": 0, "failed": ["vector_service_unavailable"]}
+
+        success_count = 0
+        failed: List[str] = []
+        loaded_docs = st.session_state.get("loaded_documents", [])
+
+        for uploaded_file in uploaded_files:
+            try:
+                if not self._validate_file(uploaded_file):
+                    failed.append(uploaded_file.name)
+                    continue
+
+                file_path = self._save_uploaded_file(uploaded_file)
+                logger.info("Saved file to %s", file_path)
+
+                try:
+                    documents = self.document_service.load_document(file_path)
+                    logger.info("Loaded %s chunks from %s", len(documents), uploaded_file.name)
+                except DocumentLoadError as load_error:
+                    failed.append(uploaded_file.name)
+                    st.error(f"❌ Cannot load {uploaded_file.name}: {str(load_error)}")
+                    continue
+
+                self.vector_service.add_documents(documents)
+
+                loaded_docs.append(
+                    {
+                        "name": uploaded_file.name,
+                        "path": file_path,
+                        "file_type": Path(uploaded_file.name).suffix.lower(),
+                        "chunks": len(documents),
+                    }
+                )
+                success_count += 1
+            except Exception as file_error:
+                failed.append(getattr(uploaded_file, "name", "unknown_file"))
+                logger.error("Failed processing file %s: %s", getattr(uploaded_file, "name", "unknown"), file_error)
+
+        st.session_state.loaded_documents = loaded_docs
+        st.session_state.vector_store_initialized = success_count > 0 or bool(st.session_state.get("vector_store_initialized", False))
+
+        if success_count > 0:
+            st.success(f"✅ Successfully processed {success_count} document(s)")
+        if failed:
+            st.warning("⚠️ Could not process: " + ", ".join(failed))
+
+        return {
+            "success_count": success_count,
+            "failed": failed,
+            "total": len(uploaded_files),
+        }
     
     def _validate_file(self, uploaded_file) -> bool:
         """
@@ -151,6 +182,7 @@ class DocumentController:
             try:
                 self.vector_service.clear_store()
                 st.session_state.vector_store_initialized = False
+                st.session_state.loaded_documents = []
                 st.success("✅ Vector store cleared successfully")
                 logger.warning("Vector store cleared by user")
             except Exception as e:
@@ -158,3 +190,55 @@ class DocumentController:
                 st.error(f"❌ Error: {str(e)}")
         else:
             st.warning("⚠️ Vector store not initialized")
+
+    def benchmark_chunk_configs(
+        self,
+        query: str,
+        configs: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        """Compare chunk settings using a lightweight keyword-hit proxy metric."""
+        loaded_documents = st.session_state.get("loaded_documents", [])
+        if not loaded_documents:
+            return []
+
+        normalized_query = (query or "").strip().lower()
+        tokens = [token for token in normalized_query.split() if len(token) > 1]
+        if not tokens:
+            return []
+
+        original_size = self.document_service.chunk_size
+        original_overlap = self.document_service.chunk_overlap
+        results: List[Dict[str, Any]] = []
+
+        try:
+            for chunk_size, chunk_overlap in configs:
+                self.document_service.update_chunk_config(chunk_size, chunk_overlap)
+                total_chunks = 0
+                hit_chunks = 0
+
+                for doc_meta in loaded_documents:
+                    doc_path = doc_meta.get("path")
+                    if not doc_path:
+                        continue
+                    chunks = self.document_service.load_document(doc_path)
+                    total_chunks += len(chunks)
+                    for chunk in chunks:
+                        content = chunk.content.lower()
+                        if any(token in content for token in tokens):
+                            hit_chunks += 1
+
+                accuracy_proxy = (hit_chunks / total_chunks) if total_chunks else 0.0
+                results.append(
+                    {
+                        "chunk_size": chunk_size,
+                        "chunk_overlap": chunk_overlap,
+                        "total_chunks": total_chunks,
+                        "hit_chunks": hit_chunks,
+                        "accuracy_proxy": round(accuracy_proxy, 4),
+                    }
+                )
+        finally:
+            self.document_service.update_chunk_config(original_size, original_overlap)
+
+        results.sort(key=lambda row: row["accuracy_proxy"], reverse=True)
+        return results

@@ -37,22 +37,24 @@ class DocumentScreen:
         """)
         
         # File uploader
-        uploaded_file = self.components.file_uploader(
-            label="Choose a document",
-            accepted_types=[ext.replace('.', '') for ext in ALLOWED_EXTENSIONS]
+        uploaded_files = self.components.file_uploader(
+            label="Choose one or multiple documents",
+            accepted_types=[ext.replace('.', '') for ext in ALLOWED_EXTENSIONS],
+            accept_multiple_files=True,
         )
-        
+
         # Upload button
-        if uploaded_file is not None:
+        if uploaded_files:
             col1, col2, col3 = st.columns([1, 2, 1])
             
             with col2:
-                if st.button("📤 Process Document", use_container_width=True, type="primary"):
-                    with self.components.loading_spinner("Processing document..."):
-                        success = self.controller.upload_and_process(uploaded_file)
-                        
-                        if success:
+                if st.button("📤 Process Documents", use_container_width=True, type="primary"):
+                    with self.components.loading_spinner("Processing documents..."):
+                        result = self.controller.upload_and_process_many(uploaded_files)
+                        if result.get("success_count", 0) > 0:
                             st.balloons()
+
+        self._render_uploaded_document_table()
         
         # Divider
         st.markdown("---")
@@ -92,12 +94,13 @@ class DocumentScreen:
     def _render_advanced_actions(self):
         """Render advanced document actions."""
         st.subheader("⚙️ Advanced Actions")
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
-            if st.button("🗑️ Clear Vector Store", use_container_width=True):
-                if st.checkbox("⚠️ Confirm clear all documents?"):
+            confirm_clear = st.checkbox("⚠️ Confirm clear all documents and index")
+            if st.button("🗑️ Clear Vector Store", use_container_width=True, disabled=not confirm_clear):
+                if confirm_clear:
                     self.controller.clear_vector_store()
                     st.rerun()
         
@@ -105,3 +108,32 @@ class DocumentScreen:
             if st.button("ℹ️ View Upload Folder", use_container_width=True):
                 from src.utils.constants import UPLOAD_DIR
                 st.code(str(UPLOAD_DIR))
+
+    def _render_uploaded_document_table(self):
+        """Render uploaded documents and metadata filters for retrieval."""
+        loaded_documents = st.session_state.get("loaded_documents", [])
+        if not loaded_documents:
+            return
+
+        st.markdown("---")
+        st.subheader("📚 Uploaded Documents")
+
+        source_names = sorted({item.get("name", "") for item in loaded_documents if item.get("name")})
+        file_types = sorted({item.get("file_type", "") for item in loaded_documents if item.get("file_type")})
+
+        selected_sources = st.multiselect(
+            "Filter retrieval by document",
+            options=source_names,
+            default=st.session_state.get("active_source_filters", []),
+            help="Only selected documents will be used when answering questions.",
+        )
+        st.session_state.active_source_filters = selected_sources
+
+        selected_types = st.multiselect(
+            "Filter retrieval by file type",
+            options=file_types,
+            default=st.session_state.get("active_file_type_filters", []),
+        )
+        st.session_state.active_file_type_filters = selected_types
+
+        st.dataframe(loaded_documents, use_container_width=True)

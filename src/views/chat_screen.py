@@ -31,6 +31,9 @@ class ChatScreen:
     def render(self):
         """Render the chat screen."""
         st.title("💬 Chat with Your Documents")
+
+        # Sidebar is always shown so users can review history.
+        self._render_sidebar_actions()
         
         # Check if vector store is ready
         if not st.session_state.get('vector_store_initialized', False):
@@ -41,8 +44,7 @@ class ChatScreen:
         self._render_chat_history()
         self._render_chat_input()
         
-        # Sidebar actions
-        self._render_sidebar_actions()
+        self._render_retrieval_metrics()
     
     def _render_empty_state(self):
         """Show empty state when no documents loaded."""
@@ -90,14 +92,31 @@ class ChatScreen:
         """
         with st.expander("📚 View Sources"):
             for src_idx, source in enumerate(sources, 1):
+                source_file = source.metadata.get("source_file") or source.source_file
+                open_link = f"data/uploads/{source_file}" if source_file else ""
+                is_used = bool(source.metadata.get("used_in_answer", False))
                 st.markdown(f"**Source {src_idx}:** {source.get_citation()}")
+                if open_link:
+                    st.markdown(f"[Open source file]({open_link})")
+
+                overlap = source.metadata.get("used_term_overlap", 0)
+                if is_used:
+                    st.caption(f"✅ Highlighted as used context (term overlap: {overlap})")
+                else:
+                    st.caption("ℹ️ Retrieved context")
+
+                preview = source.content[:300] + "..." if len(source.content) > 300 else source.content
+                if is_used:
+                    preview = f"<mark>{preview}</mark>"
+
                 st.text_area(
                     f"Context {src_idx}",
-                    value=source.content[:300] + "..." if len(source.content) > 300 else source.content,
+                    value=source.content,
                     height=100,
                     key=f"source_msg{msg_idx}_src{src_idx}",
                     disabled=True
                 )
+                st.markdown(preview, unsafe_allow_html=True)
     
     def _render_chat_input(self):
         """Render chat input box."""
@@ -165,14 +184,44 @@ class ChatScreen:
         """Render sidebar action buttons."""
         st.sidebar.markdown("---")
         self.components.sidebar_section("Chat Actions", "🔧")
-        
+
+        confirm_clear = st.sidebar.checkbox("Confirm clear history")
         col1, col2 = st.sidebar.columns(2)
-        
+
         with col1:
-            if st.button("🗑️ Clear Chat", use_container_width=True):
+            if st.button("🗑️ Clear History", use_container_width=True, disabled=not confirm_clear):
                 self.controller.clear_history()
                 st.rerun()
-        
+
         with col2:
             num_messages = len(st.session_state.get('chat_history', []))
             st.metric("Messages", num_messages)
+
+        st.sidebar.markdown("---")
+        self.components.sidebar_section("Conversation History", "🕘")
+        self._render_sidebar_history()
+
+    def _render_sidebar_history(self):
+        """Render compact conversation history in sidebar."""
+        chat_history = st.session_state.get("chat_history")
+        if not chat_history or len(chat_history) == 0:
+            st.sidebar.caption("No messages yet")
+            return
+
+        for idx, message in enumerate(chat_history.get_recent(20), start=1):
+            if message.role != "user":
+                continue
+            st.sidebar.markdown(f"{idx}. {message.content}")
+
+    def _render_retrieval_metrics(self):
+        """Show retrieval strategy metrics for hybrid/pure-vector comparison."""
+        stats = st.session_state.get("last_retrieval_stats", {})
+        if not stats:
+            return
+
+        with st.expander("📈 Retrieval Metrics"):
+            st.json(stats)
+            comparison = st.session_state.get("retrieval_comparison")
+            if comparison:
+                st.markdown("**Hybrid vs Vector**")
+                st.write(comparison)

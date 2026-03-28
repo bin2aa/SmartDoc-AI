@@ -48,6 +48,13 @@ class Document:
         page = self.page_number
         source = Path(self.source_file).name if self.source_file else 'Unknown'
         
+        chunk_start = self.metadata.get('chunk_start')
+        chunk_end = self.metadata.get('chunk_end')
+
+        if page and chunk_start is not None and chunk_end is not None:
+            return f"[{source}, page {page}, chars {chunk_start}-{chunk_end}]"
         if page:
             return f"[{source}, page {page}]"
+        if chunk_start is not None and chunk_end is not None:
+            return f"[{source}, chars {chunk_start}-{chunk_end}]"
         return f"[{source}]"

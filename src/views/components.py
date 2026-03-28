@@ -10,7 +10,8 @@ class UIComponents:
     @staticmethod
     def file_uploader(
         label: str = "Upload Document",
-        accepted_types: List[str] = None
+        accepted_types: List[str] = None,
+        accept_multiple_files: bool = False,
     ):
         """
         Reusable file uploader component.
@@ -28,6 +29,7 @@ class UIComponents:
         return st.file_uploader(
             label,
             type=accepted_types,
+            accept_multiple_files=accept_multiple_files,
             help=f"Supported formats: {', '.join(accepted_types)}"
         )
     
