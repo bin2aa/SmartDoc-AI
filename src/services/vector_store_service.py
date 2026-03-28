@@ -1,13 +1,15 @@
 """Vector store service for SmartDoc AI using FAISS."""
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import os
 import re
+import time
 import hashlib
 from pathlib import Path
 import numpy as np
 from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document as LCDocument
 from src.models.document_model import Document
@@ -57,6 +59,19 @@ class AbstractVectorStoreService(ABC):
     @abstractmethod
     def similarity_search(self, query: str, k: int = 3) -> List[LCDocument]:
         """Search for similar documents."""
+        pass
+
+    @abstractmethod
+    def search(
+        self,
+        query: str,
+        k: int = 3,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        use_hybrid: bool = False,
+        rerank: bool = False,
+        fetch_k: int = 20,
+    ) -> Tuple[List[Document], Dict[str, Any]]:
+        """Advanced retrieval with optional hybrid and reranking."""
         pass
     
     @abstractmethod
@@ -118,6 +133,9 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
         self.embedding_model = embedding_model
         self.embeddings: Optional[Any] = None
         self.vector_store: Optional[FAISS] = None
+        self._bm25_retriever: Optional[BM25Retriever] = None
+        self._cross_encoder: Optional[Any] = None
+        self._cross_encoder_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
         self._init_error: Optional[str] = None
         self.using_offline_fallback: bool = False
         
@@ -226,6 +244,9 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
             else:
                 self.vector_store.add_documents(lc_docs)
                 logger.info("Added documents to existing FAISS index")
+
+            # BM25 needs to be rebuilt from all current docs.
+            self._rebuild_bm25_retriever()
                 
         except Exception as e:
             logger.error(f"Failed to add documents: {e}")
@@ -242,34 +263,241 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
         Returns:
             List of similar Document objects
         """
+        docs, _ = self.search(query=query, k=k, use_hybrid=False, rerank=False)
+        return docs
+
+    def search(
+        self,
+        query: str,
+        k: int = 3,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        use_hybrid: bool = False,
+        rerank: bool = False,
+        fetch_k: int = 20,
+    ) -> Tuple[List[Document], Dict[str, Any]]:
+        """Advanced retrieval supporting hybrid search, filtering and reranking."""
         if self.vector_store is None:
             if self.embeddings is None:
                 error_message = self._init_error or "Embedding model is not initialized"
                 raise VectorStoreError(error_message)
             logger.warning("Vector store not initialized, returning empty results")
-            return []
-        
+            return [], self._build_empty_stats(use_hybrid=use_hybrid, rerank=rerank)
+
+        stats: Dict[str, Any] = {
+            "use_hybrid": use_hybrid,
+            "rerank": rerank,
+            "vector_time_ms": 0.0,
+            "bm25_time_ms": 0.0,
+            "rerank_time_ms": 0.0,
+            "total_time_ms": 0.0,
+            "vector_candidates": 0,
+            "bm25_candidates": 0,
+            "merged_candidates": 0,
+            "overlap_count": 0,
+            "results": 0,
+        }
+
         try:
-            logger.info(f"Searching for {k} similar documents")
-            results = self.vector_store.similarity_search(query, k=k)
-            
-            # Convert back to domain Document
-            docs = [
-                Document(content=doc.page_content, metadata=doc.metadata)
-                for doc in results
-            ]
-            
-            logger.info(f"Found {len(docs)} similar documents")
-            return docs
-            
+            start = time.perf_counter()
+            vector_candidates = self._vector_search(query=query, k=max(k, fetch_k))
+            stats["vector_time_ms"] = round((time.perf_counter() - start) * 1000, 2)
+            stats["vector_candidates"] = len(vector_candidates)
+
+            merged_candidates = vector_candidates
+            bm25_candidates: List[Document] = []
+
+            if use_hybrid:
+                bm25_start = time.perf_counter()
+                bm25_candidates = self._bm25_search(query=query, k=max(k, fetch_k))
+                stats["bm25_time_ms"] = round((time.perf_counter() - bm25_start) * 1000, 2)
+                stats["bm25_candidates"] = len(bm25_candidates)
+
+                merged_candidates = self._merge_results(vector_candidates, bm25_candidates)
+                stats["overlap_count"] = self._count_overlap(vector_candidates, bm25_candidates)
+
+            if metadata_filters:
+                merged_candidates = self._apply_metadata_filters(merged_candidates, metadata_filters)
+
+            stats["merged_candidates"] = len(merged_candidates)
+
+            if rerank:
+                rerank_start = time.perf_counter()
+                merged_candidates = self._rerank_documents(query, merged_candidates)
+                stats["rerank_time_ms"] = round((time.perf_counter() - rerank_start) * 1000, 2)
+
+            final_docs = merged_candidates[:k]
+            stats["results"] = len(final_docs)
+            stats["total_time_ms"] = round(
+                stats["vector_time_ms"] + stats["bm25_time_ms"] + stats["rerank_time_ms"],
+                2,
+            )
+
+            logger.info(
+                "Retrieval done | hybrid=%s rerank=%s results=%s vector_ms=%.2f bm25_ms=%.2f rerank_ms=%.2f",
+                use_hybrid,
+                rerank,
+                len(final_docs),
+                stats["vector_time_ms"],
+                stats["bm25_time_ms"],
+                stats["rerank_time_ms"],
+            )
+            return final_docs, stats
         except Exception as e:
-            logger.error(f"Search failed: {e}")
+            logger.error("Advanced search failed: %s", e)
             raise VectorStoreError(f"Search failed: {str(e)}")
+
+    def _vector_search(self, query: str, k: int) -> List[Document]:
+        """Run pure vector search and return domain documents."""
+        if self.using_offline_fallback:
+            query_embedding = self.embeddings.embed_query(query)
+            results = self.vector_store.similarity_search_by_vector(query_embedding, k=k)
+        else:
+            results = self.vector_store.similarity_search(query, k=k)
+        docs = [Document(content=doc.page_content, metadata=doc.metadata) for doc in results]
+        return docs
+
+    def _all_lc_documents(self) -> List[LCDocument]:
+        """Get all currently indexed documents from FAISS docstore."""
+        if self.vector_store is None:
+            return []
+        docstore_dict = getattr(getattr(self.vector_store, "docstore", None), "_dict", {})
+        return list(docstore_dict.values()) if docstore_dict else []
+
+    def _rebuild_bm25_retriever(self) -> None:
+        """Rebuild BM25 index from all currently indexed FAISS documents."""
+        try:
+            all_docs = self._all_lc_documents()
+            if not all_docs:
+                self._bm25_retriever = None
+                return
+            retriever = BM25Retriever.from_documents(all_docs)
+            retriever.k = min(20, len(all_docs))
+            self._bm25_retriever = retriever
+            logger.info("BM25 retriever rebuilt with %s docs", len(all_docs))
+        except Exception as bm25_error:
+            self._bm25_retriever = None
+            logger.warning("Could not rebuild BM25 retriever: %s", bm25_error)
+
+    def _bm25_search(self, query: str, k: int) -> List[Document]:
+        """Run BM25 keyword retrieval and return domain documents."""
+        if self._bm25_retriever is None:
+            self._rebuild_bm25_retriever()
+        if self._bm25_retriever is None:
+            return []
+
+        self._bm25_retriever.k = k
+        results = self._bm25_retriever.invoke(query)
+        return [Document(content=doc.page_content, metadata=doc.metadata) for doc in results]
+
+    @staticmethod
+    def _doc_key(doc: Document) -> str:
+        """Create a deterministic key used for deduplication and overlap metrics."""
+        source = doc.metadata.get("source", "")
+        page = doc.metadata.get("page", "")
+        chunk_idx = doc.metadata.get("chunk_index", "")
+        content_hash = hashlib.md5(doc.content.encode("utf-8")).hexdigest()
+        return f"{source}|{page}|{chunk_idx}|{content_hash}"
+
+    def _merge_results(self, vector_docs: List[Document], bm25_docs: List[Document]) -> List[Document]:
+        """Merge vector and BM25 results with de-duplication preserving rank order."""
+        merged: List[Document] = []
+        seen: set = set()
+        for doc in vector_docs + bm25_docs:
+            key = self._doc_key(doc)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(doc)
+        return merged
+
+    def _count_overlap(self, vector_docs: List[Document], bm25_docs: List[Document]) -> int:
+        """Count overlap between vector and BM25 candidate sets."""
+        vector_keys = {self._doc_key(doc) for doc in vector_docs}
+        bm25_keys = {self._doc_key(doc) for doc in bm25_docs}
+        return len(vector_keys.intersection(bm25_keys))
+
+    @staticmethod
+    def _apply_metadata_filters(
+        documents: List[Document],
+        metadata_filters: Optional[Dict[str, Any]],
+    ) -> List[Document]:
+        """Filter docs by metadata fields such as source_files and file_types."""
+        if not metadata_filters:
+            return documents
+
+        source_files = set(metadata_filters.get("source_files", []))
+        file_types = set(metadata_filters.get("file_types", []))
+
+        filtered: List[Document] = []
+        for doc in documents:
+            source = str(doc.metadata.get("source", ""))
+            source_name = Path(source).name
+            file_type = str(doc.metadata.get("file_type", Path(source).suffix.lower()))
+
+            if source_files and source_name not in source_files:
+                continue
+            if file_types and file_type not in file_types:
+                continue
+            filtered.append(doc)
+        return filtered
+
+    def _load_cross_encoder(self) -> Optional[Any]:
+        """Lazy-load cross encoder model only when reranking is requested."""
+        if self._cross_encoder is not None:
+            return self._cross_encoder
+        try:
+            from sentence_transformers import CrossEncoder
+
+            self._cross_encoder = CrossEncoder(self._cross_encoder_name)
+            logger.info("Cross-encoder loaded: %s", self._cross_encoder_name)
+        except Exception as error:
+            logger.warning("Cross-encoder unavailable, skipping rerank: %s", error)
+            self._cross_encoder = None
+        return self._cross_encoder
+
+    def _rerank_documents(self, query: str, documents: List[Document]) -> List[Document]:
+        """Rerank candidates using cross-encoder relevance scores."""
+        if not documents:
+            return []
+
+        cross_encoder = self._load_cross_encoder()
+        if cross_encoder is None:
+            return documents
+
+        pairs = [[query, doc.content] for doc in documents]
+        scores = cross_encoder.predict(pairs)
+        ranked = sorted(zip(documents, scores), key=lambda item: float(item[1]), reverse=True)
+
+        reranked_docs: List[Document] = []
+        for rank, (doc, score) in enumerate(ranked, start=1):
+            metadata = dict(doc.metadata)
+            metadata["rerank_score"] = float(score)
+            metadata["rerank_rank"] = rank
+            reranked_docs.append(Document(content=doc.content, metadata=metadata))
+        return reranked_docs
+
+    @staticmethod
+    def _build_empty_stats(use_hybrid: bool, rerank: bool) -> Dict[str, Any]:
+        """Build empty retrieval statistics payload."""
+        return {
+            "use_hybrid": use_hybrid,
+            "rerank": rerank,
+            "vector_time_ms": 0.0,
+            "bm25_time_ms": 0.0,
+            "rerank_time_ms": 0.0,
+            "total_time_ms": 0.0,
+            "vector_candidates": 0,
+            "bm25_candidates": 0,
+            "merged_candidates": 0,
+            "overlap_count": 0,
+            "results": 0,
+        }
     
     def clear_store(self) -> None:
         """Clear the vector store."""
         logger.warning("Clearing vector store")
         self.vector_store = None
+        self._bm25_retriever = None
         logger.info("Vector store cleared")
     
     @property

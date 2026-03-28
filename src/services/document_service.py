@@ -1,6 +1,7 @@
 """Document service for loading and processing documents."""
 
 from pathlib import Path
+from datetime import datetime
 from typing import List
 from langchain_community.document_loaders import PDFPlumberLoader, Docx2txtLoader, TextLoader
 from langchain_core.documents import Document as LCDocument
@@ -58,9 +59,17 @@ class SimpleTextSplitter:
         chunks = []
         for doc in documents:
             text = doc.page_content
-            for i in range(0, len(text), self.chunk_size - self.chunk_overlap):
+            step = max(1, self.chunk_size - self.chunk_overlap)
+            for i in range(0, len(text), step):
                 chunk_text = text[i:i + self.chunk_size]
-                chunks.append(LCDocument(page_content=chunk_text, metadata=doc.metadata))
+                if not chunk_text.strip():
+                    continue
+                chunk_metadata = {
+                    **doc.metadata,
+                    "chunk_start": i,
+                    "chunk_end": i + len(chunk_text),
+                }
+                chunks.append(LCDocument(page_content=chunk_text, metadata=chunk_metadata))
         return chunks
 
 
@@ -111,12 +120,21 @@ class DocumentService:
             logger.info(f"Split into {len(chunks)} chunks")
             
             # Convert to domain Document objects
+            source_path = Path(file_path)
+            upload_time = datetime.now().isoformat()
             documents = [
                 Document(
                     content=chunk.page_content,
-                    metadata={**chunk.metadata, 'source': file_path}
+                    metadata={
+                        **chunk.metadata,
+                        'source': file_path,
+                        'source_file': source_path.name,
+                        'file_type': source_path.suffix.lower(),
+                        'uploaded_at': upload_time,
+                        'chunk_index': idx,
+                    }
                 )
-                for chunk in chunks
+                for idx, chunk in enumerate(chunks)
             ]
             
             logger.info(f"Successfully processed {file_path}: {len(documents)} chunks")

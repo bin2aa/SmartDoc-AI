@@ -1,6 +1,6 @@
 """Chat controller for handling chat operations."""
 
-from typing import Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple
 import streamlit as st
 from src.services.llm_service import AbstractLLMService, OllamaLLMService
 from src.services.vector_store_service import AbstractVectorStoreService
@@ -63,6 +63,21 @@ class ChatController:
             raise ValueError("Query cannot be empty")
         
         logger.info(f"Processing query: {query[:50]}...")
+
+        use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
+        use_rerank = bool(st.session_state.get("use_rerank", False))
+        retrieval_k = int(st.session_state.get("retrieval_k", k))
+        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_file_types = st.session_state.get("active_file_type_filters", [])
+
+        metadata_filters: Dict[str, Any] = {}
+        if selected_sources:
+            metadata_filters["source_files"] = selected_sources
+        if selected_file_types:
+            metadata_filters["file_types"] = selected_file_types
+
+        rewritten_query = self._rewrite_query(query)
+        conversation_context = self._conversation_context(max_turns=4)
         
         # Check if vector store is initialized
         if self.vector_service is None or not self.vector_service.is_initialized:
@@ -71,7 +86,42 @@ class ChatController:
         
         # Retrieve relevant documents
         try:
-            relevant_docs = self.vector_service.similarity_search(query, k=k)
+            if hasattr(self.vector_service, "search"):
+                relevant_docs, retrieval_stats = self.vector_service.search(
+                    query=rewritten_query,
+                    k=retrieval_k,
+                    metadata_filters=metadata_filters,
+                    use_hybrid=use_hybrid,
+                    rerank=use_rerank,
+                    fetch_k=max(retrieval_k * 4, 20),
+                )
+            else:
+                relevant_docs = self.vector_service.similarity_search(rewritten_query, k=retrieval_k)
+                retrieval_stats = {
+                    "use_hybrid": False,
+                    "rerank": False,
+                    "results": len(relevant_docs),
+                }
+
+            st.session_state.last_retrieval_stats = retrieval_stats
+
+            if use_hybrid and hasattr(self.vector_service, "search"):
+                vector_only_docs, vector_stats = self.vector_service.search(
+                    query=rewritten_query,
+                    k=retrieval_k,
+                    metadata_filters=metadata_filters,
+                    use_hybrid=False,
+                    rerank=False,
+                    fetch_k=max(retrieval_k * 4, 20),
+                )
+                st.session_state.retrieval_comparison = {
+                    "vector_results": len(vector_only_docs),
+                    "hybrid_results": len(relevant_docs),
+                    "vector_ms": vector_stats.get("total_time_ms", vector_stats.get("vector_time_ms", 0.0)),
+                    "hybrid_ms": retrieval_stats.get("total_time_ms", 0.0),
+                    "overlap": retrieval_stats.get("overlap_count", 0),
+                }
+
             logger.info(f"Retrieved {len(relevant_docs)} relevant documents")
         except Exception as e:
             logger.error(f"Document retrieval failed: {e}")
@@ -83,22 +133,28 @@ class ChatController:
             return "I don't have enough information to answer this question.", []
         
         # Build context
-        context = "\n\n".join([doc.content for doc in relevant_docs])
+        context = "\n\n".join(
+            [
+                f"[Source: {doc.get_citation()} | chunk={doc.metadata.get('chunk_index', 'n/a')}]\n{doc.content}"
+                for doc in relevant_docs
+            ]
+        )
         logger.debug(f"Context length: {len(context)} characters")
         
         # Create prompt
-        prompt = self._build_prompt(context, query)
+        prompt = self._build_prompt(context, query, conversation_context)
         
         # Generate response
         try:
             response = self.llm_service.generate(prompt)
+            self._mark_used_chunks(answer=response, sources=relevant_docs)
             logger.info("Response generated successfully")
             return response, relevant_docs
         except Exception as e:
             logger.error(f"Response generation failed: {e}")
             raise
-    
-    def _build_prompt(self, context: str, question: str) -> str:
+
+    def _build_prompt(self, context: str, question: str, chat_history_context: str) -> str:
         """
         Build prompt for LLM.
         
@@ -117,6 +173,9 @@ Detect the question language and respond in the SAME language.
 Keep your answer concise (3-4 sentences maximum).
 Be factual and precise.
 
+    RECENT CONVERSATION:
+    {chat_history_context}
+
 CONTEXT:
 {context}
 
@@ -124,6 +183,53 @@ QUESTION:
 {question}
 
 ANSWER:"""
+
+    def _conversation_context(self, max_turns: int = 4) -> str:
+        """Build compact conversational memory from session chat history."""
+        chat_history = st.session_state.get("chat_history")
+        if not chat_history or len(chat_history) == 0:
+            return "No previous conversation."
+
+        recent_messages = chat_history.get_recent(n=max_turns * 2)
+        lines: List[str] = []
+        for message in recent_messages:
+            role = "User" if message.role == "user" else "Assistant"
+            lines.append(f"{role}: {message.content}")
+        return "\n".join(lines)
+
+    def _rewrite_query(self, query: str) -> str:
+        """Rewrite short follow-up queries using previous user message context."""
+        chat_history = st.session_state.get("chat_history")
+        if not chat_history or len(chat_history) == 0:
+            return query
+
+        stripped = query.strip()
+        lowered = stripped.lower()
+        followup_markers = ["nó", "cái đó", "điều đó", "thế còn", "it", "that", "those", "they", "them"]
+        is_followup = len(stripped.split()) <= 8 or any(marker in lowered for marker in followup_markers)
+
+        if not is_followup:
+            return stripped
+
+        recent_user_questions = [msg.content for msg in chat_history.get_recent(8) if msg.role == "user"]
+        previous_question = recent_user_questions[-1] if recent_user_questions else ""
+
+        if not previous_question:
+            return stripped
+
+        rewritten = f"{stripped} (follow-up to previous question: {previous_question})"
+        logger.info("Rewrote follow-up query for conversational retrieval")
+        return rewritten
+
+    @staticmethod
+    def _mark_used_chunks(answer: str, sources: List[Document]) -> None:
+        """Tag likely used chunks for UI highlighting."""
+        answer_terms = {term for term in (answer or "").lower().split() if len(term) > 3}
+        for source in sources:
+            content = source.content.lower()
+            overlap = sum(1 for term in answer_terms if term in content)
+            source.metadata["used_in_answer"] = overlap > 0
+            source.metadata["used_term_overlap"] = overlap
     
     def clear_history(self) -> None:
         """Clear chat history from session state."""
