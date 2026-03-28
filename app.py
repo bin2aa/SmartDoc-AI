@@ -113,6 +113,30 @@ class SessionStateManager:
         if 'reply_templates' not in st.session_state:
             st.session_state.reply_templates = DEFAULT_STREAMLIT_REPLY_TEMPLATES
 
+        if 'loaded_documents' not in st.session_state:
+            st.session_state.loaded_documents = []
+
+        if 'active_source_filters' not in st.session_state:
+            st.session_state.active_source_filters = []
+
+        if 'active_file_type_filters' not in st.session_state:
+            st.session_state.active_file_type_filters = []
+
+        if 'use_hybrid_search' not in st.session_state:
+            st.session_state.use_hybrid_search = False
+
+        if 'use_rerank' not in st.session_state:
+            st.session_state.use_rerank = False
+
+        if 'retrieval_k' not in st.session_state:
+            st.session_state.retrieval_k = 3
+
+        if 'last_retrieval_stats' not in st.session_state:
+            st.session_state.last_retrieval_stats = {}
+
+        if 'retrieval_comparison' not in st.session_state:
+            st.session_state.retrieval_comparison = {}
+
         # n8n integration settings
         if 'n8n_enabled' not in st.session_state:
             st.session_state.n8n_enabled = N8N_DEFAULT_ENABLED

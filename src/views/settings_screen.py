@@ -40,6 +40,11 @@ class SettingsScreen:
         
         # Chunk Configuration
         self._render_chunk_settings()
+
+        st.markdown("---")
+
+        # Retrieval Strategy
+        self._render_retrieval_settings()
         
         st.markdown("---")
         
@@ -86,6 +91,64 @@ class SettingsScreen:
             st.session_state.chunk_size = chunk_size
             st.session_state.chunk_overlap = chunk_overlap
             self.document_controller.update_chunk_config(chunk_size, chunk_overlap)
+
+        st.markdown("#### 🧪 Chunk Strategy Benchmark")
+        benchmark_query = st.text_input(
+            "Benchmark query",
+            value=st.session_state.get("chunk_benchmark_query", ""),
+            help="Use a representative question to compare chunk settings.",
+        )
+        st.session_state.chunk_benchmark_query = benchmark_query
+
+        if st.button("Run Chunk Benchmark"):
+            chunk_sizes = [500, 1000, 1500, 2000]
+            chunk_overlaps = [50, 100, 200]
+            configs = [(size, overlap) for size in chunk_sizes for overlap in chunk_overlaps]
+            results = self.document_controller.benchmark_chunk_configs(
+                query=benchmark_query,
+                configs=configs,
+            )
+            if results:
+                st.dataframe(results, use_container_width=True)
+                best = results[0]
+                st.success(
+                    "Best proxy accuracy: "
+                    f"size={best['chunk_size']}, overlap={best['chunk_overlap']}, "
+                    f"score={best['accuracy_proxy']}"
+                )
+            else:
+                st.warning("No benchmark result. Upload documents and provide a query first.")
+
+    def _render_retrieval_settings(self):
+        """Render retrieval strategy options including hybrid and rerank."""
+        st.subheader("🔎 Retrieval Strategy")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.session_state.use_hybrid_search = st.toggle(
+                "Hybrid Search (Vector + BM25)",
+                value=st.session_state.get("use_hybrid_search", False),
+            )
+
+        with col2:
+            st.session_state.use_rerank = st.toggle(
+                "Cross-Encoder Re-ranking",
+                value=st.session_state.get("use_rerank", False),
+            )
+
+        with col3:
+            st.session_state.retrieval_k = st.selectbox(
+                "Top-K Retrieved Chunks",
+                options=[3, 5, 8, 10],
+                index=[3, 5, 8, 10].index(st.session_state.get("retrieval_k", 3))
+                if st.session_state.get("retrieval_k", 3) in [3, 5, 8, 10]
+                else 0,
+            )
+
+        st.caption(
+            "Enable hybrid search to combine semantic and keyword retrieval. "
+            "Enable re-ranking to improve relevance at the cost of higher latency."
+        )
     
     def _render_llm_settings(self):
         """Render LLM configuration settings."""
