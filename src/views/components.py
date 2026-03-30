@@ -3,6 +3,8 @@
 import streamlit as st
 from typing import Optional, List
 
+from src.utils import ui_icons as icons
+
 
 # Material Symbols icon helper
 def icon(name: str) -> str:
@@ -58,7 +60,7 @@ class UIComponents:
         Args:
             role: Message role (user/assistant)
             content: Message content
-            avatar: Optional avatar emoji
+            avatar: Emoji, short text, or ``:material/icon_name:`` for chat avatar
         """
         with st.chat_message(role, avatar=avatar):
             st.markdown(content)
@@ -85,7 +87,7 @@ class UIComponents:
             message: Error message
             details: Optional error details
         """
-        st.error(message)
+        st.error(f"{icons.ERROR} {message}")
         if details:
             with st.expander("Error Details"):
                 st.code(details)
@@ -98,7 +100,7 @@ class UIComponents:
         Args:
             message: Success message
         """
-        st.success(message)
+        st.success(f"{icons.CHECK_CIRCLE} {message}")
     
     @staticmethod
     def info_alert(message: str):
@@ -108,7 +110,7 @@ class UIComponents:
         Args:
             message: Info message
         """
-        st.info(message)
+        st.info(f"{icons.INFO} {message}")
     
     @staticmethod
     def warning_alert(message: str):
@@ -118,21 +120,21 @@ class UIComponents:
         Args:
             message: Warning message
         """
-        st.warning(message)
+        st.warning(f"{icons.WARNING} {message}")
     
     @staticmethod
-    def sidebar_section(title: str, icon_name: str = "push_pin"):
+    def sidebar_section(title: str, material_icon: Optional[str] = "push_pin"):
         """
-        Create sidebar section with title using Material Symbols icon.
-        
+        Create sidebar section with title.
+
         Args:
             title: Section title
-            icon_name: Material Symbols icon name
+            material_icon: Material icon name (snake_case), no colons. None = text only.
         """
-        st.sidebar.markdown(
-            f'### <span class="material-symbols-outlined" style="vertical-align:middle;font-size:1.1em;">{icon_name}</span> {title}',
-            unsafe_allow_html=True,
-        )
+        if material_icon:
+            st.sidebar.markdown(f"### :material/{material_icon}: {title}")
+        else:
+            st.sidebar.markdown(f"### {title}")
     
     @staticmethod
     def metric_card(label: str, value: str, delta: Optional[str] = None):

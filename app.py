@@ -46,6 +46,12 @@ from src.utils.constants import (
     DEFAULT_STREAMLIT_REPLY_TEMPLATES,
     AVAILABLE_MODELS,
     DEFAULT_RAG_TYPE,
+    DEFAULT_OCR_LANG,
+    DEFAULT_OCR_DPI,
+    DEFAULT_OCR_PSM,
+    DEFAULT_OCR_OEM,
+    DEFAULT_OCR_PREPROCESS,
+    DEFAULT_OCR_AUTO_PDF,
 )
 
 logger = setup_logger(__name__)
@@ -140,6 +146,24 @@ class SessionStateManager:
 
         if 'llm_keep_alive' not in st.session_state:
             st.session_state.llm_keep_alive = saved_settings.get('llm_keep_alive', DEFAULT_KEEP_ALIVE)
+
+        if 'ocr_lang' not in st.session_state:
+            st.session_state.ocr_lang = saved_settings.get('ocr_lang', DEFAULT_OCR_LANG)
+
+        if 'ocr_dpi' not in st.session_state:
+            st.session_state.ocr_dpi = saved_settings.get('ocr_dpi', DEFAULT_OCR_DPI)
+
+        if 'ocr_psm' not in st.session_state:
+            st.session_state.ocr_psm = saved_settings.get('ocr_psm', DEFAULT_OCR_PSM)
+
+        if 'ocr_oem' not in st.session_state:
+            st.session_state.ocr_oem = saved_settings.get('ocr_oem', DEFAULT_OCR_OEM)
+
+        if 'ocr_preprocess' not in st.session_state:
+            st.session_state.ocr_preprocess = saved_settings.get('ocr_preprocess', DEFAULT_OCR_PREPROCESS)
+
+        if 'ocr_auto_pdf' not in st.session_state:
+            st.session_state.ocr_auto_pdf = saved_settings.get('ocr_auto_pdf', DEFAULT_OCR_AUTO_PDF)
 
         # Streamlit reply templates (intro/body/footer)
         if 'reply_templates' not in st.session_state:

@@ -50,7 +50,6 @@ class SettingsScreen:
     def render(self):
         """Render the settings screen."""
         st.markdown(f"## {icon('settings')} Settings", unsafe_allow_html=True)
-
         st.markdown("""
         Configure the RAG (Retrieval-Augmented Generation) pipeline parameters.
 

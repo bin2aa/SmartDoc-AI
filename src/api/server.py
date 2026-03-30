@@ -263,9 +263,9 @@ async def clear_storage() -> ClearResponse:
             vector_service.clear_store()
         
         loaded_documents.clear()
-        
+
         logger.info("Vector store and documents cleared")
-        
+
         return ClearResponse(
             status="success",
             message="Vector store and all documents cleared successfully"
@@ -328,9 +328,9 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
             )
             for doc in source_docs
         ]
-        
+
         logger.info("Query processed successfully")
-        
+
         return QueryResponse(
             query=request.query,
             answer=answer,
@@ -340,7 +340,7 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
             confidence_level=confidence_level,
             self_evaluation=self_evaluation,
         )
-        
+
     except HTTPException:
         raise
     except VectorStoreError as e:
