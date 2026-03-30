@@ -5,6 +5,7 @@ from src.controllers.document_controller import DocumentController
 from src.views.components import UIComponents
 from src.utils.logger import setup_logger
 from src.utils.constants import *
+from src.utils import ui_icons as icons
 
 logger = setup_logger(__name__)
 
@@ -28,7 +29,7 @@ class SettingsScreen:
     
     def render(self):
         """Render the settings screen."""
-        st.title("⚙️ Settings")
+        st.title(f"{icons.SETTINGS} Settings")
         
         st.markdown("""
         Configure the RAG (Retrieval-Augmented Generation) pipeline parameters.
@@ -63,7 +64,7 @@ class SettingsScreen:
     
     def _render_chunk_settings(self):
         """Render chunk configuration settings."""
-        st.subheader("📝 Text Chunking Configuration")
+        st.subheader(f"{icons.ARTICLE} Text chunking")
         
         col1, col2 = st.columns(2)
         
@@ -87,12 +88,12 @@ class SettingsScreen:
                 help="Overlap between consecutive chunks. Higher overlap = better continuity."
             )
         
-        if st.button("💾 Apply Chunk Settings", type="primary"):
+        if st.button("Apply chunk settings", type="primary", icon=icons.SAVE):
             st.session_state.chunk_size = chunk_size
             st.session_state.chunk_overlap = chunk_overlap
             self.document_controller.update_chunk_config(chunk_size, chunk_overlap)
 
-        st.markdown("#### 🧪 Chunk Strategy Benchmark")
+        st.markdown(f"#### {icons.SCIENCE} Chunk strategy benchmark")
         benchmark_query = st.text_input(
             "Benchmark query",
             value=st.session_state.get("chunk_benchmark_query", ""),
@@ -100,7 +101,7 @@ class SettingsScreen:
         )
         st.session_state.chunk_benchmark_query = benchmark_query
 
-        if st.button("Run Chunk Benchmark"):
+        if st.button("Run chunk benchmark", icon=icons.SCIENCE):
             chunk_sizes = [500, 1000, 1500, 2000]
             chunk_overlaps = [50, 100, 200]
             configs = [(size, overlap) for size in chunk_sizes for overlap in chunk_overlaps]
@@ -112,16 +113,16 @@ class SettingsScreen:
                 st.dataframe(results, use_container_width=True)
                 best = results[0]
                 st.success(
-                    "Best proxy accuracy: "
+                    f"{icons.CHECK_CIRCLE} Best proxy accuracy: "
                     f"size={best['chunk_size']}, overlap={best['chunk_overlap']}, "
                     f"score={best['accuracy_proxy']}"
                 )
             else:
-                st.warning("No benchmark result. Upload documents and provide a query first.")
+                st.warning(f"{icons.WARNING} No benchmark result. Upload documents and provide a query first.")
 
     def _render_retrieval_settings(self):
         """Render retrieval strategy options including hybrid and rerank."""
-        st.subheader("🔎 Retrieval Strategy")
+        st.subheader(f"{icons.MANAGE_SEARCH} Retrieval strategy")
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -152,7 +153,7 @@ class SettingsScreen:
     
     def _render_llm_settings(self):
         """Render LLM configuration settings."""
-        st.subheader("🤖 LLM Configuration")
+        st.subheader(f"{icons.PSYCHOLOGY} LLM configuration")
 
         col1, col2 = st.columns(2)
 
@@ -193,7 +194,7 @@ class SettingsScreen:
 
         col_apply, col_preset = st.columns(2)
         with col_apply:
-            if st.button("💾 Apply LLM Settings", type="primary"):
+            if st.button("Apply LLM settings", type="primary", icon=icons.SAVE):
                 st.session_state.llm_model = llm_model.strip()
                 st.session_state.llm_num_ctx = int(llm_num_ctx)
                 st.session_state.llm_num_predict = int(llm_num_predict)
@@ -201,7 +202,7 @@ class SettingsScreen:
                 self.components.success_alert("LLM settings updated")
 
         with col_preset:
-            if st.button("🪶 Apply Low-RAM Preset"):
+            if st.button("Apply low-RAM preset", icon=icons.MEMORY):
                 st.session_state.llm_model = LOW_MEMORY_FALLBACK_MODEL
                 st.session_state.llm_num_ctx = 256
                 st.session_state.llm_num_predict = 64
@@ -211,12 +212,13 @@ class SettingsScreen:
                 )
 
         st.info(
-            "💡 Tip: If you see memory errors, use an installed lightweight model, num_ctx=256, num_predict=64, keep_alive=0m."
+            f"{icons.INFO} Tip: If you see memory errors, use an installed lightweight model, "
+            "num_ctx=256, num_predict=64, keep_alive=0m."
         )
     
     def _render_system_info(self):
         """Render system information."""
-        st.subheader("🖥️ System Information")
+        st.subheader(f"{icons.COMPUTER} System information")
         
         col1, col2 = st.columns(2)
         
@@ -232,7 +234,7 @@ class SettingsScreen:
         st.code(OLLAMA_BASE_URL, language="text")
         
         # Connection test
-        if st.button("🔌 Test Ollama Connection"):
+        if st.button("Test Ollama connection", icon=icons.CABLE):
             with self.components.loading_spinner("Testing connection..."):
                 try:
                     from src.services.llm_service import OllamaLLMService
@@ -246,7 +248,7 @@ class SettingsScreen:
 
     def _render_n8n_settings(self):
         """Render n8n webhook integration settings."""
-        st.subheader("🔄 n8n Integration")
+        st.subheader(f"{icons.HUB} n8n integration")
 
         n8n_enabled = st.checkbox(
             "Enable n8n webhook on each chat",
@@ -260,12 +262,12 @@ class SettingsScreen:
             help="Example: http://localhost:5678/webhook/smartdoc-chat",
         )
 
-        if st.button("💾 Apply n8n Settings"):
+        if st.button("Apply n8n settings", icon=icons.SAVE):
             st.session_state.n8n_enabled = n8n_enabled
             st.session_state.n8n_webhook_url = n8n_webhook_url.strip()
             self.components.success_alert("n8n settings updated")
 
         if st.session_state.get("n8n_enabled", False):
-            st.info("n8n is enabled. Streamlit chat events will be posted to the configured webhook.")
+            st.info(f"{icons.INFO} n8n is enabled. Chat events will be posted to the webhook.")
         else:
-            st.warning("n8n is currently disabled.")
+            st.warning(f"{icons.WARNING} n8n is currently disabled.")

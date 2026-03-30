@@ -5,6 +5,7 @@ from src.controllers.document_controller import DocumentController
 from src.views.components import UIComponents
 from src.utils.logger import setup_logger
 from src.utils.constants import ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB
+from src.utils import ui_icons as icons
 
 logger = setup_logger(__name__)
 
@@ -28,7 +29,7 @@ class DocumentScreen:
     
     def render(self):
         """Render the document screen."""
-        st.title("📄 Document Management")
+        st.title(f"{icons.DESCRIPTION} Document management")
         
         st.markdown("""
         Upload your documents here. Supported formats: **PDF, DOCX, TXT**
@@ -48,7 +49,12 @@ class DocumentScreen:
             col1, col2, col3 = st.columns([1, 2, 1])
             
             with col2:
-                if st.button("📤 Process Documents", use_container_width=True, type="primary"):
+                if st.button(
+                    "Process documents",
+                    icon=icons.CLOUD_UPLOAD,
+                    use_container_width=True,
+                    type="primary",
+                ):
                     with self.components.loading_spinner("Processing documents..."):
                         result = self.controller.upload_and_process_many(uploaded_files)
                         if result.get("success_count", 0) > 0:
@@ -68,7 +74,7 @@ class DocumentScreen:
     
     def _render_document_info(self):
         """Display document processing information."""
-        st.subheader("ℹ️ Information")
+        st.subheader(f"{icons.INFO} Information")
         
         col1, col2, col3 = st.columns(3)
         
@@ -93,19 +99,28 @@ class DocumentScreen:
     
     def _render_advanced_actions(self):
         """Render advanced document actions."""
-        st.subheader("⚙️ Advanced Actions")
+        st.subheader(f"{icons.TUNE} Advanced actions")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            confirm_clear = st.checkbox("⚠️ Confirm clear all documents and index")
-            if st.button("🗑️ Clear Vector Store", use_container_width=True, disabled=not confirm_clear):
+            confirm_clear = st.checkbox("Confirm clear all documents and index")
+            if st.button(
+                "Clear vector store",
+                icon=icons.DELETE,
+                use_container_width=True,
+                disabled=not confirm_clear,
+            ):
                 if confirm_clear:
                     self.controller.clear_vector_store()
                     st.rerun()
         
         with col2:
-            if st.button("ℹ️ View Upload Folder", use_container_width=True):
+            if st.button(
+                "View upload folder",
+                icon=icons.FOLDER_OPEN,
+                use_container_width=True,
+            ):
                 from src.utils.constants import UPLOAD_DIR
                 st.code(str(UPLOAD_DIR))
 
@@ -116,7 +131,7 @@ class DocumentScreen:
             return
 
         st.markdown("---")
-        st.subheader("📚 Uploaded Documents")
+        st.subheader(f"{icons.FOLDER_OPEN} Uploaded documents")
 
         source_names = sorted({item.get("name", "") for item in loaded_documents if item.get("name")})
         file_types = sorted({item.get("file_type", "") for item in loaded_documents if item.get("file_type")})

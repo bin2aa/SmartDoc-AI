@@ -7,6 +7,7 @@ from src.views.components import UIComponents
 from src.models.document_model import Document
 from src.utils.logger import setup_logger
 from src.utils.exceptions import LLMConnectionError
+from src.utils import ui_icons as icons
 
 logger = setup_logger(__name__)
 
@@ -30,7 +31,7 @@ class ChatScreen:
     
     def render(self):
         """Render the chat screen."""
-        st.title("💬 Chat with Your Documents")
+        st.title(f"{icons.CHAT} Chat with your documents")
 
         # Sidebar is always shown so users can review history.
         self._render_sidebar_actions()
@@ -50,15 +51,15 @@ class ChatScreen:
         """Show empty state when no documents loaded."""
         self.components.info_alert("Please upload documents first in the Documents tab")
         
-        st.markdown("""
-        ### 👋 Welcome to SmartDoc AI!
-        
+        st.markdown(f"""
+        ### {icons.WAVING_HAND} Welcome to SmartDoc AI
+
         To get started:
-        1. Go to the **📄 Documents** tab
+        1. Go to the **Documents** tab
         2. Upload a PDF, DOCX, or TXT file
         3. Come back here to ask questions about your documents
-        
-        SmartDoc AI uses RAG (Retrieval-Augmented Generation) to provide accurate answers based on your documents.
+
+        SmartDoc AI uses RAG (Retrieval-Augmented Generation) to answer from your documents.
         """)
     
     def _render_chat_history(self):
@@ -71,7 +72,7 @@ class ChatScreen:
         
         # Display messages
         for msg_idx, message in enumerate(chat_history.messages):
-            avatar = "🧑" if message.role == "user" else "🤖"
+            avatar = icons.PERSON if message.role == "user" else icons.SMART_TOY
             self.components.chat_message(
                 role=message.role,
                 content=message.content,
@@ -90,7 +91,7 @@ class ChatScreen:
             sources: List of source documents
             msg_idx: Message index for unique key generation
         """
-        with st.expander("📚 View Sources"):
+        with st.expander("View sources", icon=icons.LIBRARY_BOOKS):
             for src_idx, source in enumerate(sources, 1):
                 source_file = source.metadata.get("source_file") or source.source_file
                 open_link = f"data/uploads/{source_file}" if source_file else ""
@@ -101,9 +102,9 @@ class ChatScreen:
 
                 overlap = source.metadata.get("used_term_overlap", 0)
                 if is_used:
-                    st.caption(f"✅ Highlighted as used context (term overlap: {overlap})")
+                    st.caption(f"{icons.CHECK_CIRCLE} Highlighted as used context (term overlap: {overlap})")
                 else:
-                    st.caption("ℹ️ Retrieved context")
+                    st.caption(f"{icons.INFO} Retrieved context")
 
                 preview = source.content[:300] + "..." if len(source.content) > 300 else source.content
                 if is_used:
@@ -125,7 +126,7 @@ class ChatScreen:
             self._add_user_message(prompt)
             
             # Get AI response
-            with self.components.loading_spinner("🤔 Thinking..."):
+            with self.components.loading_spinner("Thinking..."):
                 try:
                     answer, sources = self.controller.process_query(prompt)
                     formatted_answer = self.controller.format_reply_for_streamlit(answer, sources)
@@ -183,13 +184,18 @@ class ChatScreen:
     def _render_sidebar_actions(self):
         """Render sidebar action buttons."""
         st.sidebar.markdown("---")
-        self.components.sidebar_section("Chat Actions", "🔧")
+        self.components.sidebar_section("Chat actions", material_icon="build")
 
         confirm_clear = st.sidebar.checkbox("Confirm clear history")
         col1, col2 = st.sidebar.columns(2)
 
         with col1:
-            if st.button("🗑️ Clear History", use_container_width=True, disabled=not confirm_clear):
+            if st.button(
+                "Clear history",
+                icon=icons.DELETE,
+                use_container_width=True,
+                disabled=not confirm_clear,
+            ):
                 self.controller.clear_history()
                 st.rerun()
 
@@ -198,7 +204,7 @@ class ChatScreen:
             st.metric("Messages", num_messages)
 
         st.sidebar.markdown("---")
-        self.components.sidebar_section("Conversation History", "🕘")
+        self.components.sidebar_section("Conversation history", material_icon="history")
         self._render_sidebar_history()
 
     def _render_sidebar_history(self):
@@ -219,7 +225,7 @@ class ChatScreen:
         if not stats:
             return
 
-        with st.expander("📈 Retrieval Metrics"):
+        with st.expander("Retrieval metrics", icon=icons.BAR_CHART):
             st.json(stats)
             comparison = st.session_state.get("retrieval_comparison")
             if comparison:
