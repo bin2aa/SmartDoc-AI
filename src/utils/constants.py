@@ -61,7 +61,7 @@ MAX_FILE_SIZE_MB = 10
 
 # UI Configuration
 PAGE_TITLE = "SmartDoc AI"
-PAGE_ICON = "📚"
+PAGE_ICON = ":material/menu_book:"
 
 # n8n Integration Configuration
 N8N_DEFAULT_WEBHOOK_URL = "http://localhost:5678/webhook/smartdoc-chat"

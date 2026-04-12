@@ -65,31 +65,31 @@ app.add_middleware(
 
 try:
     vector_service = FAISSVectorStoreService()
-    logger.info("✅ Vector Store Service initialized")
+    logger.info("[OK] Vector Store Service initialized")
 except Exception as e:
-    logger.error(f"❌ Failed to initialize vector store: {e}")
+    logger.error(f"[FAIL] Failed to initialize vector store: {e}")
     vector_service = None
 
 try:
     document_service = DocumentService()
-    logger.info("✅ Document Service initialized")
+    logger.info("[OK] Document Service initialized")
 except Exception as e:
-    logger.error(f"❌ Failed to initialize document service: {e}")
+    logger.error(f"[FAIL] Failed to initialize document service: {e}")
     document_service = None
 
 try:
     llm_service = OllamaLLMService()
-    logger.info("✅ LLM Service initialized")
+    logger.info("[OK] LLM Service initialized")
 except Exception as e:
-    logger.error(f"❌ Failed to initialize LLM service: {e}")
+    logger.error(f"[FAIL] Failed to initialize LLM service: {e}")
     llm_service = None
 
 try:
     chat_controller = ChatController(llm_service, vector_service)
     document_controller = DocumentController()
-    logger.info("✅ Controllers initialized")
+    logger.info("[OK] Controllers initialized")
 except Exception as e:
-    logger.error(f"❌ Failed to initialize controllers: {e}")
+    logger.error(f"[FAIL] Failed to initialize controllers: {e}")
     chat_controller = None
     document_controller = None
 
@@ -160,7 +160,7 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
     Raises:
         HTTPException: If file type not supported or processing fails
     """
-    logger.info(f"📤 Upload requested for file: {file.filename}")
+    logger.info(f"Upload requested for file: {file.filename}")
     
     try:
         # Validate file type
@@ -184,7 +184,7 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
         with open(file_path, 'wb') as f:
             f.write(content)
         
-        logger.info(f"✅ File saved to {file_path} ({len(content)} bytes)")
+        logger.info(f"[OK] File saved to {file_path} ({len(content)} bytes)")
         
         # Load and process document
         if not document_service:
@@ -194,14 +194,14 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
         if not documents:
             raise HTTPException(status_code=400, detail="No content extracted from document")
         
-        logger.info(f"✂️ Created {len(documents)} chunks")
+        logger.info(f"Created {len(documents)} chunks")
         
         # Add to vector store (documents already chunked from load_document)
         if not vector_service:
             raise HTTPException(status_code=500, detail="Vector store not initialized")
         
         vector_service.add_documents(documents)
-        logger.info(f"🔍 Documents added to vector store")
+        logger.info(f"Documents added to vector store")
         
         # Track document
         doc_id = f"doc_{len(loaded_documents)}"
@@ -212,7 +212,7 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
             upload_date=datetime.now().isoformat()
         )
         
-        logger.info(f"✅ Document processing completed: {doc_id}")
+        logger.info(f"[OK] Document processing completed: {doc_id}")
         
         return UploadResponse(
             status="success",
@@ -225,10 +225,10 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
     except HTTPException:
         raise
     except DocumentLoadError as e:
-        logger.error(f"❌ Document load error: {e}")
+        logger.error(f"[FAIL] Document load error: {e}")
         raise HTTPException(status_code=400, detail=f"Document load failed: {str(e)}")
     except Exception as e:
-        logger.error(f"❌ Upload failed: {e}")
+        logger.error(f"[FAIL] Upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
@@ -240,7 +240,7 @@ async def list_documents() -> DocumentsListResponse:
     Returns:
         DocumentsListResponse with list of loaded documents
     """
-    logger.info("📋 Document list requested")
+    logger.info("Document list requested")
     
     return DocumentsListResponse(
         total_documents=len(loaded_documents),
@@ -256,7 +256,7 @@ async def clear_storage() -> ClearResponse:
     Returns:
         ClearResponse with confirmation
     """
-    logger.warning("🗑️ Clear storage requested")
+    logger.warning("Clear storage requested")
     
     try:
         if vector_service:
@@ -264,14 +264,14 @@ async def clear_storage() -> ClearResponse:
         
         loaded_documents.clear()
         
-        logger.info("✅ Vector store and documents cleared")
+        logger.info("[OK] Vector store and documents cleared")
         
         return ClearResponse(
             status="success",
             message="Vector store and all documents cleared successfully"
         )
     except Exception as e:
-        logger.error(f"❌ Clear storage failed: {e}")
+        logger.error(f"[FAIL] Clear storage failed: {e}")
         raise HTTPException(status_code=500, detail=f"Clear failed: {str(e)}")
 
 
@@ -291,7 +291,7 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
     Raises:
         HTTPException: If query processing fails
     """
-    logger.info(f"❓ Query received: {request.query[:50]}...")
+    logger.info(f"Query received: {request.query[:50]}...")
     
     try:
         # Check if vector store is ready
@@ -316,7 +316,7 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
             for doc in source_docs
         ]
         
-        logger.info(f"✅ Query processed successfully")
+        logger.info(f"[OK] Query processed successfully")
         
         return QueryResponse(
             query=request.query,
@@ -329,13 +329,13 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
     except HTTPException:
         raise
     except VectorStoreError as e:
-        logger.error(f"❌ Vector store error: {e}")
+        logger.error(f"[FAIL] Vector store error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except LLMConnectionError as e:
-        logger.error(f"❌ LLM connection error: {e}")
+        logger.error(f"[FAIL] LLM connection error: {e}")
         raise HTTPException(status_code=503, detail="LLM service unavailable")
     except Exception as e:
-        logger.error(f"❌ Query processing failed: {e}")
+        logger.error(f"[FAIL] Query processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 
@@ -350,7 +350,7 @@ async def batch_query(request: BatchQueryRequest) -> List[QueryResponse]:
     Returns:
         List of QueryResponse objects
     """
-    logger.info(f"📦 Batch query received with {len(request.queries)} questions")
+    logger.info(f"Batch query received with {len(request.queries)} questions")
     
     results = []
     errors = []
@@ -363,20 +363,20 @@ async def batch_query(request: BatchQueryRequest) -> List[QueryResponse]:
             )
             result = await query_documents(query_request)
             results.append(result)
-            logger.info(f"  ✅ Query {idx}/{len(request.queries)} processed")
+            logger.info(f"  [OK] Query {idx}/{len(request.queries)} processed")
         except HTTPException as e:
-            logger.error(f"  ❌ Query {idx}/{len(request.queries)} failed: {e.detail}")
+            logger.error(f"  [FAIL] Query {idx}/{len(request.queries)} failed: {e.detail}")
             errors.append({"query": query, "error": str(e.detail)})
             continue
         except Exception as e:
-            logger.error(f"  ❌ Query {idx}/{len(request.queries)} failed: {e}")
+            logger.error(f"  [FAIL] Query {idx}/{len(request.queries)} failed: {e}")
             errors.append({"query": query, "error": str(e)})
             continue
     
     if errors:
-        logger.warning(f"⚠️ Batch completed with {len(errors)} errors")
+        logger.warning(f"[WARN] Batch completed with {len(errors)} errors")
     else:
-        logger.info(f"✅ All {len(results)} queries processed successfully")
+        logger.info(f"[OK] All {len(results)} queries processed successfully")
     
     return results
 
@@ -418,14 +418,14 @@ async def general_exception_handler(request, exc):
 async def startup_event():
     """Initialize services on startup."""
     logger.info("=" * 50)
-    logger.info("🚀 SmartDocAI API Server starting...")
+    logger.info("START SmartDocAI API Server starting...")
     logger.info("=" * 50)
     
-    logger.info(f"📚 Vector Store Status: {'Ready' if vector_service and vector_service.vector_store else 'Not initialized'}")
-    logger.info(f"🤖 LLM Service Status: {'Ready' if llm_service else 'Not connected'}")
-    logger.info(f"📄 Document Service Status: {'Ready' if document_service else 'Not initialized'}")
-    logger.info(f"📍 Upload Directory: {UPLOAD_DIR}")
-    logger.info(f"🌐 API Docs: http://localhost:8001/api/docs")
+    logger.info(f"Vector Store Status: {'Ready' if vector_service and vector_service.vector_store else 'Not initialized'}")
+    logger.info(f"LLM Service Status: {'Ready' if llm_service else 'Not connected'}")
+    logger.info(f"Document Service Status: {'Ready' if document_service else 'Not initialized'}")
+    logger.info(f"Upload Directory: {UPLOAD_DIR}")
+    logger.info(f"API Docs: http://localhost:8001/api/docs")
     logger.info("=" * 50)
 
 
@@ -433,7 +433,7 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("=" * 50)
-    logger.info("❌ SmartDocAI API Server shutting down...")
+    logger.info("STOP SmartDocAI API Server shutting down...")
     logger.info("=" * 50)
 
 
