@@ -15,9 +15,11 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen2.5:1.5b"
 LOW_MEMORY_FALLBACK_MODEL = "qwen2.5:1.5b"
+AVAILABLE_MODELS = ["qwen2.5:1.5b", "qwen2.5:3b", "qwen2.5:7b"]
 DEFAULT_NUM_CTX = 1024
 DEFAULT_NUM_PREDICT = 256
 DEFAULT_KEEP_ALIVE = "0m"
+DEFAULT_LLM_TIMEOUT = 120  # seconds
 # EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
@@ -36,23 +38,23 @@ MAX_CHAT_HISTORY = 50
 # Streamlit chat reply templates (Google Sheet style: intro/body/footer)
 DEFAULT_STREAMLIT_REPLY_TEMPLATES = {
 	"found": {
-		"intro": "Chao ban, minh da tim duoc cau tra loi:",
+		"intro": "Chào bạn, mình đã tìm được câu trả lời:",
 		"body": "",
-		"footer": "Neu can minh co the giai thich them bang tieng Viet."
+		"footer": "Nếu cần mình có thể giải thích thêm bằng tiếng Việt."
 	},
 	"not_found": {
-		"intro": "Chao ban, minh chua tim duoc cau tra loi:",
-		"body": "Vui long hoi ro hon hoac upload them tai lieu lien quan trong tab Documents.",
-		"footer": "Ban hay noi ro hon duoc khong?"
+		"intro": "Chào bạn, mình chưa tìm được câu trả lời:",
+		"body": "Vui lòng hỏi rõ hơn hoặc upload thêm tài liệu liên quan trong tab Documents.",
+		"footer": "Bạn hãy nói rõ hơn được không?"
 	}
 }
 
 NO_INFO_MARKERS = [
 	"i don't have enough information to answer this question.",
 	"i dont have enough information to answer this question.",
-	"khong co du thong tin",
-	"khong du thong tin",
-	"khong tim thay thong tin"
+	"không có đủ thông tin",
+	"không đủ thông tin",
+	"không tìm thấy thông tin"
 ]
 
 # File Upload Configuration

@@ -23,6 +23,16 @@ from src.views.chat_screen import ChatScreen
 from src.views.document_screen import DocumentScreen
 from src.views.settings_screen import SettingsScreen
 from src.models.chat_model import ChatHistory
+from src.services.persistence_service import (
+    load_chat_history,
+    save_chat_history,
+    load_settings,
+    save_settings,
+    load_loaded_docs,
+    save_loaded_docs,
+    load_faiss_index,
+    save_faiss_index,
+)
 from src.utils.logger import setup_logger
 from src.utils.constants import (
     PAGE_TITLE,
@@ -31,10 +41,13 @@ from src.utils.constants import (
     DEFAULT_NUM_CTX,
     DEFAULT_NUM_PREDICT,
     DEFAULT_KEEP_ALIVE,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
     DEFAULT_STREAMLIT_REPLY_TEMPLATES,
     N8N_DEFAULT_ENABLED,
     N8N_DEFAULT_WEBHOOK_URL,
     N8N_TIMEOUT_SECONDS,
+    AVAILABLE_MODELS,
 )
 
 logger = setup_logger(__name__)
@@ -59,62 +72,80 @@ class SessionStateManager:
     
     @staticmethod
     def initialize():
-        """Initialize all session state variables."""
-        # Chat history
+        """Initialize all session state variables, loading persisted data if available."""
+        # ── Load persisted settings first ───────────────────────
+        saved_settings = load_settings()
+
+        # ── Chat history (single) ───────────────────────────────
         if 'chat_history' not in st.session_state:
-            st.session_state.chat_history = ChatHistory()
-            logger.info("Chat history initialized")
+            saved_history = load_chat_history()
+            if saved_history:
+                st.session_state.chat_history = saved_history
+                logger.info(f"Restored chat history ({len(saved_history)} messages) from disk")
+            else:
+                st.session_state.chat_history = ChatHistory()
+                logger.info("New chat history created")
+
+        # Current page: "chat", "documents", "settings"
+        if 'nav_page' not in st.session_state:
+            st.session_state.nav_page = "chat"
         
-        # Vector store initialization flag
+        # ── Vector store ────────────────────────────────────────
         if 'vector_store_initialized' not in st.session_state:
             st.session_state.vector_store_initialized = False
         
-        # Vector store service (singleton via cache_resource)
         if 'vector_service' not in st.session_state:
             st.session_state.vector_service = get_vector_service()
             logger.info("Vector store service initialized")
         else:
-            # Recover from stale cached instance that failed during a previous run.
             cached_service = st.session_state.vector_service
             if getattr(cached_service, "embeddings", None) is None:
                 logger.warning("Detected unhealthy cached vector service, rebuilding it")
                 get_vector_service.clear()
                 st.session_state.vector_service = get_vector_service()
                 logger.info("Vector store service reinitialized after health check")
+
+        # Try to restore FAISS index from disk
+        if not st.session_state.vector_store_initialized:
+            vs = st.session_state.vector_service
+            if load_faiss_index(vs):
+                st.session_state.vector_store_initialized = True
+                logger.info("FAISS index restored from disk")
         
         # Document service (singleton via cache_resource)
         if 'document_service' not in st.session_state:
             st.session_state.document_service = get_document_service()
             logger.info("Document service initialized")
         
-        # Chunk configuration
+        # ── Settings (with persistence) ─────────────────────────
         if 'chunk_size' not in st.session_state:
-            from src.utils.constants import DEFAULT_CHUNK_SIZE
-            st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
+            st.session_state.chunk_size = saved_settings.get('chunk_size', DEFAULT_CHUNK_SIZE)
         
         if 'chunk_overlap' not in st.session_state:
-            from src.utils.constants import DEFAULT_CHUNK_OVERLAP
-            st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
+            st.session_state.chunk_overlap = saved_settings.get('chunk_overlap', DEFAULT_CHUNK_OVERLAP)
 
-        # LLM runtime tuning
         if 'llm_model' not in st.session_state:
-            st.session_state.llm_model = DEFAULT_MODEL
+            st.session_state.llm_model = saved_settings.get('llm_model', DEFAULT_MODEL)
 
         if 'llm_num_ctx' not in st.session_state:
-            st.session_state.llm_num_ctx = DEFAULT_NUM_CTX
+            st.session_state.llm_num_ctx = saved_settings.get('llm_num_ctx', DEFAULT_NUM_CTX)
 
         if 'llm_num_predict' not in st.session_state:
-            st.session_state.llm_num_predict = DEFAULT_NUM_PREDICT
+            st.session_state.llm_num_predict = saved_settings.get('llm_num_predict', DEFAULT_NUM_PREDICT)
 
         if 'llm_keep_alive' not in st.session_state:
-            st.session_state.llm_keep_alive = DEFAULT_KEEP_ALIVE
+            st.session_state.llm_keep_alive = saved_settings.get('llm_keep_alive', DEFAULT_KEEP_ALIVE)
 
         # Streamlit reply templates (intro/body/footer)
         if 'reply_templates' not in st.session_state:
             st.session_state.reply_templates = DEFAULT_STREAMLIT_REPLY_TEMPLATES
 
+        # ── Loaded documents (with persistence) ─────────────────
         if 'loaded_documents' not in st.session_state:
-            st.session_state.loaded_documents = []
+            saved_docs = load_loaded_docs()
+            st.session_state.loaded_documents = saved_docs
+            if saved_docs:
+                logger.info(f"Restored {len(saved_docs)} loaded document metadata from disk")
 
         if 'active_source_filters' not in st.session_state:
             st.session_state.active_source_filters = []
@@ -123,13 +154,13 @@ class SessionStateManager:
             st.session_state.active_file_type_filters = []
 
         if 'use_hybrid_search' not in st.session_state:
-            st.session_state.use_hybrid_search = False
+            st.session_state.use_hybrid_search = saved_settings.get('use_hybrid_search', False)
 
         if 'use_rerank' not in st.session_state:
-            st.session_state.use_rerank = False
+            st.session_state.use_rerank = saved_settings.get('use_rerank', False)
 
         if 'retrieval_k' not in st.session_state:
-            st.session_state.retrieval_k = 3
+            st.session_state.retrieval_k = saved_settings.get('retrieval_k', 3)
 
         if 'last_retrieval_stats' not in st.session_state:
             st.session_state.last_retrieval_stats = {}
@@ -139,10 +170,17 @@ class SessionStateManager:
 
         # n8n integration settings
         if 'n8n_enabled' not in st.session_state:
-            st.session_state.n8n_enabled = N8N_DEFAULT_ENABLED
+            st.session_state.n8n_enabled = saved_settings.get('n8n_enabled', N8N_DEFAULT_ENABLED)
 
         if 'n8n_webhook_url' not in st.session_state:
-            st.session_state.n8n_webhook_url = N8N_DEFAULT_WEBHOOK_URL
+            st.session_state.n8n_webhook_url = saved_settings.get('n8n_webhook_url', N8N_DEFAULT_WEBHOOK_URL)
+
+
+def _clear_chat_history():
+    """Clear chat history and persist."""
+    st.session_state.chat_history.clear()
+    save_chat_history(st.session_state.chat_history)
+    st.rerun()
 
 
 def main():
@@ -158,15 +196,10 @@ def main():
     # Initialize session state
     SessionStateManager.initialize()
     
-    # Custom CSS for better styling
+    # Custom CSS
     st.markdown("""
     <style>
-        .main {
-            padding-top: 2rem;
-        }
-        .stButton>button {
-            width: 100%;
-        }
+        .main { padding-top: 2rem; }
     </style>
     """, unsafe_allow_html=True)
     
@@ -195,56 +228,92 @@ def main():
         vector_service=st.session_state.vector_service
     )
     
-    # Sidebar navigation
+    # ═══════════════════════════════════════════════════════════
+    # SIDEBAR
+    # ═══════════════════════════════════════════════════════════
+    current_page = st.session_state.get('nav_page', 'chat')
+
     with st.sidebar:
+        # ── Header ─────────────────────────────────────────────
         st.title(f"{PAGE_ICON} {PAGE_TITLE}")
-        st.markdown("**Intelligent Document Q&A System**")
-        st.markdown("---")
-        
-        # Navigation menu
-        page = st.radio(
-            "Navigation",
-            ["💬 Chat", "📄 Documents", "⚙️ Settings"],
-            label_visibility="collapsed"
-        )
-        
-        st.markdown("---")
-        
-        # Status indicators
-        st.markdown("### 📊 Status")
-        
-        # Vector store status
+
+        # ── Status ─────────────────────────────────────────────
         if st.session_state.vector_store_initialized:
-            st.success("🟢 Documents Loaded")
+            docs_count = len(st.session_state.get("loaded_documents", []))
+            st.caption(f"🟢 {docs_count} doc(s) loaded")
         else:
-            st.warning("🟡 No Documents")
-        
-        # Chat history status
-        num_messages = len(st.session_state.chat_history)
-        st.info(f"💬 {num_messages} messages")
-        
+            st.caption("🟡 No documents")
+
         st.markdown("---")
-        
+
+        # ── Navigation ─────────────────────────────────────────
+        btn_type_chat = "primary" if current_page == "chat" else "secondary"
+        if st.button("💬 Chat", use_container_width=True, type=btn_type_chat):
+            st.session_state.nav_page = "chat"
+            st.rerun()
+
+        btn_type_docs = "primary" if current_page == "documents" else "secondary"
+        if st.button("📄 Documents", use_container_width=True, type=btn_type_docs):
+            st.session_state.nav_page = "documents"
+            st.rerun()
+
+        btn_type_set = "primary" if current_page == "settings" else "secondary"
+        if st.button("⚙️ Cài đặt", use_container_width=True, type=btn_type_set):
+            st.session_state.nav_page = "settings"
+            st.rerun()
+
+        st.markdown("---")
+
+        # ── Clear Chat (only on chat page) ─────────────────────
+        if current_page == "chat":
+            if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
+                _clear_chat_history()
+
+            st.markdown("---")
+
+        # ── Model Switch (bottom) ──────────────────────────────
+        st.markdown("**🤖 Model**")
+        current_model = st.session_state.get('llm_model', DEFAULT_MODEL)
+        model_options = list(AVAILABLE_MODELS)
+        if current_model not in model_options:
+            model_options.append(current_model)
+
+        new_model = st.selectbox(
+            "Switch model",
+            options=model_options,
+            index=model_options.index(current_model) if current_model in model_options else 0,
+            label_visibility="collapsed",
+        )
+        if new_model != current_model:
+            st.session_state.llm_model = new_model
+            st.rerun()
+
+        st.markdown("---")
+
         # Footer
         st.markdown("""
-        <div style='text-align: center; color: #666; font-size: 0.8em;'>
-            <p>SmartDoc AI v1.0</p>
-            <p>OSSD Course - Spring 2026</p>
+        <div style='text-align: center; color: #666; font-size: 0.75em;'>
+            <p>SmartDoc AI v1.0 · OSSD Spring 2026</p>
         </div>
         """, unsafe_allow_html=True)
     
-    # Route to appropriate screen
-    if page == "💬 Chat":
-        chat_screen = ChatScreen(chat_controller)
-        chat_screen.render()
-    
-    elif page == "📄 Documents":
+    # ═══════════════════════════════════════════════════════════
+    # MAIN CONTENT — Route based on nav_page
+    # ═══════════════════════════════════════════════════════════
+    page = st.session_state.get('nav_page', 'chat')
+
+    if page == "documents":
         doc_screen = DocumentScreen(document_controller)
         doc_screen.render()
-    
-    elif page == "⚙️ Settings":
+
+    elif page == "settings":
         settings_screen = SettingsScreen(document_controller)
         settings_screen.render()
+
+    else:
+        # Default: Chat screen
+        chat_screen = ChatScreen(chat_controller)
+        chat_screen.render()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Chat domain models for SmartDoc AI."""
 
+from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Literal, Optional, Dict
@@ -70,6 +71,53 @@ class ChatHistory:
         """
         return self.messages[-n:] if len(self.messages) > n else self.messages
     
+    def to_dict(self) -> dict:
+        """Serialize history to dict for JSON persistence."""
+        return {
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "timestamp": m.timestamp.isoformat(),
+                    "metadata": self._serialize_metadata(m.metadata),
+                }
+                for m in self.messages
+            ],
+            "max_history": self.max_history,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ChatHistory":
+        """Deserialize history from dict."""
+        history = cls(max_history=data.get("max_history", 50))
+        for msg_data in data.get("messages", []):
+            msg = ChatMessage(
+                role=msg_data["role"],
+                content=msg_data["content"],
+                timestamp=datetime.fromisoformat(msg_data["timestamp"]) if "timestamp" in msg_data else datetime.now(),
+                metadata=msg_data.get("metadata"),
+            )
+            history.messages.append(msg)
+        return history
+
+    @staticmethod
+    def _serialize_metadata(metadata) -> dict:
+        """Serialize metadata, handling non-serializable objects like Document sources."""
+        if metadata is None:
+            return None
+        result = {}
+        for key, value in metadata.items():
+            if key == "sources":
+                # Sources contain Document objects — skip them for persistence
+                continue
+            try:
+                import json
+                json.dumps(value)
+                result[key] = value
+            except (TypeError, ValueError):
+                result[key] = str(value)
+        return result if result else None
+
     def __len__(self) -> int:
         """Return number of messages."""
         return len(self.messages)

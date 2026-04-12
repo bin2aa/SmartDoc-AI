@@ -157,11 +157,27 @@ class SettingsScreen:
         col1, col2 = st.columns(2)
 
         with col1:
-            llm_model = st.text_input(
+            current_model = st.session_state.get('llm_model', DEFAULT_MODEL)
+            model_options = list(AVAILABLE_MODELS)
+            if current_model not in model_options:
+                model_options.append(current_model)
+            model_options.append("Other (custom)...")
+
+            selected_model = st.selectbox(
                 "Ollama Model",
-                value=st.session_state.get('llm_model', DEFAULT_MODEL),
-                help="Example: qwen2.5:1.5b or qwen2.5:0.5b (lighter RAM)",
+                options=model_options,
+                index=model_options.index(current_model) if current_model in model_options else 0,
+                help="Select a model or choose 'Other' to enter a custom model name.",
             )
+
+            if selected_model == "Other (custom)...":
+                llm_model = st.text_input(
+                    "Custom Model Name",
+                    value=current_model if current_model not in AVAILABLE_MODELS else "",
+                    placeholder="e.g. qwen2.5:7b",
+                )
+            else:
+                llm_model = selected_model
 
             llm_num_ctx = st.slider(
                 "Context Window (num_ctx)",
