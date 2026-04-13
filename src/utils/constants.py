@@ -65,7 +65,3 @@ MAX_FILE_SIZE_MB = 10
 PAGE_TITLE = "SmartDoc AI"
 PAGE_ICON = "📚"
 
-# n8n Integration Configuration
-N8N_DEFAULT_WEBHOOK_URL = "http://localhost:5678/webhook/smartdoc-chat"
-N8N_DEFAULT_ENABLED = False
-N8N_TIMEOUT_SECONDS = 5

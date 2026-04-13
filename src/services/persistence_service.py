@@ -37,12 +37,29 @@ def save_chat_history(history: ChatHistory) -> bool:
     try:
         _ensure_persist_dir()
         data = history.to_dict()
+        msg_count = len(data.get("messages", []))
+        
         with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info(f"Saved chat history ({len(history)} messages) to {CHAT_HISTORY_FILE}")
-        return True
+        
+        # Verify the file was actually written
+        if CHAT_HISTORY_FILE.exists():
+            with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
+                verify_data = json.load(f)
+            verify_count = len(verify_data.get("messages", []))
+            if verify_count == msg_count:
+                logger.info(f"Saved & verified chat history ({msg_count} messages) to {CHAT_HISTORY_FILE}")
+                return True
+            else:
+                logger.error(f"Verification FAILED: wrote {msg_count} messages but read back {verify_count}")
+                return False
+        else:
+            logger.error(f"File {CHAT_HISTORY_FILE} does not exist after write!")
+            return False
     except Exception as e:
         logger.error(f"Failed to save chat history: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 

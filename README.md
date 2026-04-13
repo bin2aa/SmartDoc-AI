@@ -30,7 +30,10 @@ pip install -r requirements.txt
 **Bước 3: Tải mô hình AI cục bộ**
 (Đảm bảo máy chủ Ollama đang chạy ngầm trên máy)
 ```bash
+ollama pull qwen2.5:1.5b
+ollama pull qwen2.5:3b
 ollama pull qwen2.5:7b
+
 ```
 
 **Bước 4: Khởi chạy ứng dụng**

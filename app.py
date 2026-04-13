@@ -18,7 +18,6 @@ from src.controllers.document_controller import DocumentController
 from src.services.vector_store_service import FAISSVectorStoreService
 from src.services.document_service import DocumentService
 from src.services.llm_service import OllamaLLMService
-from src.services.n8n_service import N8NWebhookService
 from src.views.chat_screen import ChatScreen
 from src.views.document_screen import DocumentScreen
 from src.views.settings_screen import SettingsScreen
@@ -44,9 +43,6 @@ from src.utils.constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_STREAMLIT_REPLY_TEMPLATES,
-    N8N_DEFAULT_ENABLED,
-    N8N_DEFAULT_WEBHOOK_URL,
-    N8N_TIMEOUT_SECONDS,
     AVAILABLE_MODELS,
 )
 
@@ -85,6 +81,12 @@ class SessionStateManager:
             else:
                 st.session_state.chat_history = ChatHistory()
                 logger.info("New chat history created")
+        else:
+            existing = st.session_state.chat_history
+            if existing is not None:
+                logger.info(f"Chat history already in session_state: {len(existing)} messages")
+            else:
+                logger.warning("Chat history in session_state is None — will be recovered by ChatScreen")
 
         # Current page: "chat", "documents", "settings"
         if 'nav_page' not in st.session_state:
@@ -105,9 +107,10 @@ class SessionStateManager:
                 st.session_state.vector_service = get_vector_service()
                 logger.info("Vector store service reinitialized after health check")
 
-        # Try to restore FAISS index from disk
-        if not st.session_state.vector_store_initialized:
-            vs = st.session_state.vector_service
+        # Always try to restore FAISS index from disk if not currently initialized.
+        # This handles page refresh where the in-memory index is lost but disk copy exists.
+        vs = st.session_state.vector_service
+        if not st.session_state.vector_store_initialized or not vs.is_initialized:
             if load_faiss_index(vs):
                 st.session_state.vector_store_initialized = True
                 logger.info("FAISS index restored from disk")
@@ -168,13 +171,6 @@ class SessionStateManager:
         if 'retrieval_comparison' not in st.session_state:
             st.session_state.retrieval_comparison = {}
 
-        # n8n integration settings
-        if 'n8n_enabled' not in st.session_state:
-            st.session_state.n8n_enabled = saved_settings.get('n8n_enabled', N8N_DEFAULT_ENABLED)
-
-        if 'n8n_webhook_url' not in st.session_state:
-            st.session_state.n8n_webhook_url = saved_settings.get('n8n_webhook_url', N8N_DEFAULT_WEBHOOK_URL)
-
 
 def _clear_chat_history():
     """Clear chat history and persist."""
@@ -204,12 +200,6 @@ def main():
     """, unsafe_allow_html=True)
     
     # Initialize controllers
-    n8n_service = N8NWebhookService(
-        webhook_url=st.session_state.get('n8n_webhook_url', N8N_DEFAULT_WEBHOOK_URL),
-        enabled=st.session_state.get('n8n_enabled', N8N_DEFAULT_ENABLED),
-        timeout_seconds=N8N_TIMEOUT_SECONDS,
-    )
-
     llm_service = OllamaLLMService(
         model=st.session_state.get('llm_model', DEFAULT_MODEL),
         num_ctx=int(st.session_state.get('llm_num_ctx', DEFAULT_NUM_CTX)),
@@ -220,7 +210,6 @@ def main():
     chat_controller = ChatController(
         llm_service=llm_service,
         vector_service=st.session_state.vector_service,
-        n8n_service=n8n_service,
     )
     
     document_controller = DocumentController(
@@ -286,6 +275,19 @@ def main():
         )
         if new_model != current_model:
             st.session_state.llm_model = new_model
+            # Persist model change to disk
+            from src.services.persistence_service import save_settings
+            save_settings({
+                "chunk_size": st.session_state.get("chunk_size", DEFAULT_CHUNK_SIZE),
+                "chunk_overlap": st.session_state.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP),
+                "llm_model": new_model,
+                "llm_num_ctx": st.session_state.get("llm_num_ctx", DEFAULT_NUM_CTX),
+                "llm_num_predict": st.session_state.get("llm_num_predict", DEFAULT_NUM_PREDICT),
+                "llm_keep_alive": st.session_state.get("llm_keep_alive", DEFAULT_KEEP_ALIVE),
+                "use_hybrid_search": st.session_state.get("use_hybrid_search", False),
+                "use_rerank": st.session_state.get("use_rerank", False),
+                "retrieval_k": st.session_state.get("retrieval_k", 3),
+            })
             st.rerun()
 
         st.markdown("---")

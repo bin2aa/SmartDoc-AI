@@ -1,5 +1,5 @@
 """
-FastAPI server for SmartDocAI - N8N Integration
+FastAPI server for SmartDocAI
 Provides REST API endpoints for document processing and querying.
 """
 
@@ -45,14 +45,14 @@ logger = setup_logger(__name__)
 
 app = FastAPI(
     title="SmartDocAI API",
-    description="REST API for N8N Integration - Document Q&A System",
+    description="REST API - Document Q&A System",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json"
 )
 
-# Enable CORS for N8N and external integrations
+# Enable CORS for external integrations
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure for production!

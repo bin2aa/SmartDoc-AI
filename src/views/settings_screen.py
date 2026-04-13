@@ -5,6 +5,7 @@ from src.controllers.document_controller import DocumentController
 from src.views.components import UIComponents
 from src.utils.logger import setup_logger
 from src.utils.constants import *
+from src.services.persistence_service import save_settings
 
 logger = setup_logger(__name__)
 
@@ -52,11 +53,6 @@ class SettingsScreen:
         self._render_llm_settings()
         
         st.markdown("---")
-
-        # n8n Integration
-        self._render_n8n_settings()
-
-        st.markdown("---")
         
         # System Info
         self._render_system_info()
@@ -91,6 +87,7 @@ class SettingsScreen:
             st.session_state.chunk_size = chunk_size
             st.session_state.chunk_overlap = chunk_overlap
             self.document_controller.update_chunk_config(chunk_size, chunk_overlap)
+            self._persist_current_settings()
 
         st.markdown("#### 🧪 Chunk Strategy Benchmark")
         benchmark_query = st.text_input(
@@ -149,6 +146,9 @@ class SettingsScreen:
             "Enable hybrid search to combine semantic and keyword retrieval. "
             "Enable re-ranking to improve relevance at the cost of higher latency."
         )
+
+        # Persist retrieval settings whenever they change
+        self._persist_current_settings()
     
     def _render_llm_settings(self):
         """Render LLM configuration settings."""
@@ -214,7 +214,8 @@ class SettingsScreen:
                 st.session_state.llm_num_ctx = int(llm_num_ctx)
                 st.session_state.llm_num_predict = int(llm_num_predict)
                 st.session_state.llm_keep_alive = llm_keep_alive
-                self.components.success_alert("LLM settings updated")
+                self._persist_current_settings()
+                self.components.success_alert("LLM settings updated and saved")
 
         with col_preset:
             if st.button("🪶 Apply Low-RAM Preset"):
@@ -222,6 +223,7 @@ class SettingsScreen:
                 st.session_state.llm_num_ctx = 256
                 st.session_state.llm_num_predict = 64
                 st.session_state.llm_keep_alive = "0m"
+                self._persist_current_settings()
                 self.components.success_alert(
                     f"Applied low-RAM preset: model={LOW_MEMORY_FALLBACK_MODEL}, num_ctx=256, num_predict=64"
                 )
@@ -260,28 +262,19 @@ class SettingsScreen:
                         details=str(e)
                     )
 
-    def _render_n8n_settings(self):
-        """Render n8n webhook integration settings."""
-        st.subheader("🔄 n8n Integration")
+    def _persist_current_settings(self) -> None:
+        """Save all current settings from session state to disk."""
+        settings = {
+            "chunk_size": st.session_state.get("chunk_size", DEFAULT_CHUNK_SIZE),
+            "chunk_overlap": st.session_state.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP),
+            "llm_model": st.session_state.get("llm_model", DEFAULT_MODEL),
+            "llm_num_ctx": st.session_state.get("llm_num_ctx", DEFAULT_NUM_CTX),
+            "llm_num_predict": st.session_state.get("llm_num_predict", DEFAULT_NUM_PREDICT),
+            "llm_keep_alive": st.session_state.get("llm_keep_alive", DEFAULT_KEEP_ALIVE),
+            "use_hybrid_search": st.session_state.get("use_hybrid_search", False),
+            "use_rerank": st.session_state.get("use_rerank", False),
+            "retrieval_k": st.session_state.get("retrieval_k", 3),
+        }
+        save_settings(settings)
+        logger.info("Settings persisted to disk")
 
-        n8n_enabled = st.checkbox(
-            "Enable n8n webhook on each chat",
-            value=st.session_state.get("n8n_enabled", False),
-            help="When enabled, every Streamlit chat Q&A is sent to n8n webhook.",
-        )
-
-        n8n_webhook_url = st.text_input(
-            "n8n Webhook URL",
-            value=st.session_state.get("n8n_webhook_url", "http://localhost:5678/webhook/smartdoc-chat"),
-            help="Example: http://localhost:5678/webhook/smartdoc-chat",
-        )
-
-        if st.button("💾 Apply n8n Settings"):
-            st.session_state.n8n_enabled = n8n_enabled
-            st.session_state.n8n_webhook_url = n8n_webhook_url.strip()
-            self.components.success_alert("n8n settings updated")
-
-        if st.session_state.get("n8n_enabled", False):
-            st.info("n8n is enabled. Streamlit chat events will be posted to the configured webhook.")
-        else:
-            st.warning("n8n is currently disabled.")

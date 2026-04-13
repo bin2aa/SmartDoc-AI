@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # SmartDocAI - Start API Server
-# This script starts the FastAPI server for N8N integration
+# This script starts the FastAPI server
 
 set -e
 

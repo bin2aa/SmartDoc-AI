@@ -8,7 +8,7 @@ from src.models.document_model import Document
 from src.models.chat_model import ChatHistory
 from src.utils.logger import setup_logger
 from src.utils.exceptions import LLMConnectionError
-from src.services.persistence_service import save_chat_history
+from src.services.persistence_service import save_chat_history, load_chat_history
 
 logger = setup_logger(__name__)
 
@@ -39,11 +39,38 @@ class ChatScreen:
             self._render_empty_state()
             return
         
+        # Ensure chat_history exists (recovery mechanism)
+        self._ensure_history()
+        
         # Render chat interface
         self._render_chat_history()
         self._render_chat_input()
         
         self._render_retrieval_metrics()
+    
+    def _ensure_history(self):
+        """Ensure chat_history exists in session_state, recover from disk if needed."""
+        history = st.session_state.get('chat_history')
+        if history is not None and len(history) > 0:
+            logger.debug(f"Chat history OK: {len(history)} messages")
+            return
+        
+        # History is empty or missing — try to recover from disk
+        if history is None:
+            logger.warning("chat_history is None in session_state — recovering from disk")
+            saved = load_chat_history()
+            if saved and len(saved) > 0:
+                st.session_state.chat_history = saved
+                logger.info(f"Recovered chat history from disk ({len(saved)} messages)")
+            else:
+                st.session_state.chat_history = ChatHistory()
+                logger.info("Created new empty ChatHistory")
+        elif len(history) == 0:
+            # Empty history in memory — check disk as well
+            saved = load_chat_history()
+            if saved and len(saved) > 0:
+                logger.warning(f"Memory history is empty but disk has {len(saved)} messages — recovering")
+                st.session_state.chat_history = saved
     
     def _render_empty_state(self):
         """Show empty state when no documents loaded."""
@@ -61,14 +88,16 @@ class ChatScreen:
         """)
     
     def _render_chat_history(self):
-        """Display chat history."""
+        """Display all chat history messages."""
         history = st.session_state.get('chat_history')
+        
+        logger.debug(f"_render_chat_history: history={type(history).__name__}, len={len(history) if history else 'None'}")
         
         if not history or len(history) == 0:
             self.components.info_alert("Bắt đầu cuộc trò chuyện bằng cách đặt câu hỏi bên dưới")
             return
         
-        # Display messages
+        # Display ALL messages from history
         for msg_idx, message in enumerate(history.messages):
             avatar = "🧑" if message.role == "user" else "🤖"
             self.components.chat_message(
@@ -78,12 +107,24 @@ class ChatScreen:
             )
             
             # Display sources if available
-            if message.role == "assistant" and message.metadata and message.metadata.get('sources'):
-                self._render_sources(message.metadata['sources'], msg_idx)
+            if message.role == "assistant" and message.metadata and message.metadata.get('source_citations'):
+                self._render_source_citations(message.metadata['source_citations'], msg_idx)
+    
+    def _render_source_citations(self, citations: List[str], msg_idx: int):
+        """
+        Render source citations from serialized citation strings.
+        
+        Args:
+            citations: List of citation strings
+            msg_idx: Message index for unique key generation
+        """
+        with st.expander("📚 Xem nguồn tham khảo"):
+            for src_idx, citation in enumerate(citations, 1):
+                st.markdown(f"**Nguồn {src_idx}:** {citation}")
     
     def _render_sources(self, sources: List[Document], msg_idx: int):
         """
-        Render source citations.
+        Render source citations with full document info.
         
         Args:
             sources: List of source documents
@@ -118,11 +159,18 @@ class ChatScreen:
                 st.markdown(preview, unsafe_allow_html=True)
     
     def _render_chat_input(self):
-        """Render chat input box with streaming response and step-by-step status."""
+        """Render chat input box with streaming response and step-by-step status.
+        
+        Key design: Messages are ONLY added to chat_history AFTER the full
+        response is complete. Sources are stored as citation strings (not 
+        Document objects) to avoid serialization issues.
+        """
         if prompt := st.chat_input("Đặt câu hỏi về tài liệu của bạn..."):
-            # Add user message to history and display it
-            self._add_user_message(prompt)
-            self.components.chat_message("user", prompt, avatar="🧑")
+            logger.info(f"Chat input received: '{prompt[:50]}...'")
+            
+            # Display user message bubble directly (not from history)
+            with st.chat_message("user", avatar="🧑"):
+                st.markdown(prompt)
 
             # Process query with streaming
             try:
@@ -146,21 +194,41 @@ class ChatScreen:
                 # Step 3: Post-processing
                 self.controller._mark_used_chunks(answer=response_text, sources=sources)
                 formatted_answer = self.controller.format_reply_for_streamlit(response_text, sources)
-                self.controller.notify_n8n_chat_event(
-                    question=prompt,
-                    formatted_answer=formatted_answer,
-                    raw_answer=response_text,
-                    sources=sources,
-                )
 
-                # Step 4: Save to history (use formatted_answer for consistent display)
-                self._add_assistant_message(formatted_answer, sources)
+                # Step 4: Convert sources to serializable citation strings
+                source_citations = []
+                if sources:
+                    for src in sources:
+                        try:
+                            source_citations.append(src.get_citation())
+                        except Exception as e:
+                            logger.warning(f"Failed to get citation for source: {e}")
+                            source_citations.append("[Unknown source]")
 
-                # Step 5: Persist chat history to disk
-                save_chat_history(st.session_state.chat_history)
+                # Step 5: NOW add both messages to history (after display is complete).
+                # Store source_citations (list of strings) instead of Document objects.
+                history = st.session_state.get('chat_history')
+                if history is None:
+                    logger.error("chat_history is None before adding messages — creating new one")
+                    history = ChatHistory()
+                    st.session_state.chat_history = history
+                
+                history.add_message("user", prompt)
+                assistant_metadata = {'source_citations': source_citations} if source_citations else None
+                history.add_message("assistant", formatted_answer, metadata=assistant_metadata)
+                logger.info(f"Added user + assistant messages to history (total: {len(history)})")
+
+                # Step 6: Persist chat history to disk with verification
+                save_ok = save_chat_history(history)
+                if save_ok:
+                    logger.info("Chat history saved to disk successfully")
+                else:
+                    logger.error("FAILED to save chat history to disk!")
 
             except LLMConnectionError as e:
                 logger.error(f"LLM error while processing query: {e}")
+                # Still save the user message to history even if LLM fails
+                self._save_user_message(prompt)
                 self.components.error_alert(
                     "Không thể kết nối đến Ollama",
                     details=(
@@ -174,25 +242,27 @@ class ChatScreen:
                 )
             except Exception as e:
                 logger.error(f"Error processing query: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Still save the user message to history even if processing fails
+                self._save_user_message(prompt)
                 self.components.error_alert(
                     "Không thể xử lý câu hỏi của bạn",
                     details=str(e)
                 )
     
-    def _add_user_message(self, content: str):
-        """Add user message to chat history."""
-        history = st.session_state.get('chat_history')
-        if history:
-            history.add_message("user", content)
-        logger.info(f"User message added: {content[:50]}...")
-    
-    def _add_assistant_message(self, content: str, sources: List[Document] = None):
-        """Add assistant message to chat history."""
-        history = st.session_state.get('chat_history')
-        if history:
-            metadata = {'sources': sources} if sources else None
-            history.add_message("assistant", content, metadata=metadata)
-        logger.info(f"Assistant message added: {content[:50]}...")
+    def _save_user_message(self, prompt: str):
+        """Save user message to history even when processing fails."""
+        try:
+            history = st.session_state.get('chat_history')
+            if history is None:
+                history = ChatHistory()
+                st.session_state.chat_history = history
+            history.add_message("user", prompt)
+            save_chat_history(history)
+            logger.info(f"Saved user message to history (total: {len(history)})")
+        except Exception as e:
+            logger.error(f"Failed to save user message: {e}")
     
     def _render_retrieval_metrics(self):
         """Show retrieval strategy metrics for hybrid/pure-vector comparison."""

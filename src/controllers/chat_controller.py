@@ -4,7 +4,6 @@ from typing import Any, Dict, Generator, Optional, List, Tuple
 import streamlit as st
 from src.services.llm_service import AbstractLLMService, OllamaLLMService
 from src.services.vector_store_service import AbstractVectorStoreService
-from src.services.n8n_service import N8NWebhookService
 from src.models.chat_model import ChatHistory
 from src.models.document_model import Document
 from src.utils.logger import setup_logger
@@ -25,7 +24,6 @@ class ChatController:
         self,
         llm_service: Optional[AbstractLLMService] = None,
         vector_service: Optional[AbstractVectorStoreService] = None,
-        n8n_service: Optional[N8NWebhookService] = None,
     ):
         """
         Initialize chat controller.
@@ -37,7 +35,6 @@ class ChatController:
         # Dependency injection with defaults
         self.llm_service = llm_service or OllamaLLMService()
         self.vector_service = vector_service
-        self.n8n_service = n8n_service
         
         logger.info("ChatController initialized")
     
@@ -674,20 +671,3 @@ Provide a clear, comprehensive answer:"""
         response = self.llm_service.generate(prompt)
         return response, relevant_docs
 
-    def notify_n8n_chat_event(
-        self,
-        question: str,
-        formatted_answer: str,
-        raw_answer: str,
-        sources: List[Document],
-    ) -> bool:
-        """Send current chat interaction to n8n webhook when integration is enabled."""
-        if self.n8n_service is None:
-            return False
-
-        return self.n8n_service.send_chat_event(
-            question=question,
-            formatted_answer=formatted_answer,
-            raw_answer=raw_answer,
-            sources=sources,
-        )

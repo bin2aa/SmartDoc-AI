@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 from src.services.document_service import DocumentService
 from src.services.vector_store_service import AbstractVectorStoreService
+from src.services.persistence_service import save_faiss_index, save_loaded_docs, clear_all_state
 from src.utils.logger import setup_logger
 from src.utils.exceptions import DocumentLoadError
 from src.utils.constants import UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB
@@ -108,6 +109,10 @@ class DocumentController:
         st.session_state.vector_store_initialized = success_count > 0 or bool(st.session_state.get("vector_store_initialized", False))
 
         if success_count > 0:
+            # Persist FAISS index and document metadata to disk
+            save_faiss_index(self.vector_service)
+            save_loaded_docs(loaded_docs)
+            logger.info("Persisted FAISS index and document metadata to disk")
             st.success(f"✅ Successfully processed {success_count} document(s)")
         if failed:
             st.warning("⚠️ Could not process: " + ", ".join(failed))
@@ -177,14 +182,16 @@ class DocumentController:
         logger.info(f"Chunk config updated via controller")
     
     def clear_vector_store(self) -> None:
-        """Clear vector store."""
+        """Clear vector store and all persisted state."""
         if self.vector_service:
             try:
                 self.vector_service.clear_store()
                 st.session_state.vector_store_initialized = False
                 st.session_state.loaded_documents = []
+                # Clear all persisted state from disk
+                clear_all_state()
                 st.success("✅ Vector store cleared successfully")
-                logger.warning("Vector store cleared by user")
+                logger.warning("Vector store and persisted state cleared by user")
             except Exception as e:
                 logger.error(f"Error clearing vector store: {e}")
                 st.error(f"❌ Error: {str(e)}")
