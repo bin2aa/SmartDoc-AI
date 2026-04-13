@@ -191,7 +191,7 @@ class ChatController:
             raise ValueError("Query cannot be empty")
 
         logger.info(f"Processing query (stream): {query[:50]}...")
-        _status_step("🔍", f"**Phân tích câu hỏi:** `{query}`")
+        _status_step("[search]", f"**Phân tích câu hỏi:** `{query}`")
 
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         use_rerank = bool(st.session_state.get("use_rerank", False))
@@ -207,9 +207,9 @@ class ChatController:
 
         rewritten_query = self._rewrite_query(query)
         if rewritten_query != query:
-            _status_step("✏️", f"**Viết lại câu hỏi:** `{rewritten_query}`")
+            _status_step("[rewrite]", f"**Viết lại câu hỏi:** `{rewritten_query}`")
         else:
-            _status_step("✅", "Câu hỏi không cần viết lại")
+            _status_step("[ok]", "Câu hỏi không cần viết lại")
 
         conversation_context = self._conversation_context(max_turns=4)
 
@@ -219,7 +219,7 @@ class ChatController:
             raise VectorStoreError("Please upload documents first")
 
         # ── Step 3: Retrieve relevant documents ───────────────────────
-        _status_step("📄", f"Đang tìm kiếm tài liệu (k={retrieval_k}, hybrid={use_hybrid}, rerank={use_rerank})...")
+        _status_step("[docs]", f"Đang tìm kiếm tài liệu (k={retrieval_k}, hybrid={use_hybrid}, rerank={use_rerank})...")
         t_retrieval = _time.time()
 
         try:
@@ -262,19 +262,19 @@ class ChatController:
             retrieval_ms = (_time.time() - t_retrieval) * 1000
             total_ms = retrieval_stats.get("total_time_ms", retrieval_ms)
             _status_step(
-                "✅",
+                "[ok]",
                 f"Tìm thấy **{len(relevant_docs)} tài liệu** ({total_ms:.0f}ms)",
             )
             logger.info(f"Retrieved {len(relevant_docs)} relevant documents")
         except Exception as e:
-            _status_step("❌", f"Lỗi tìm kiếm: {e}")
+            _status_step("[err]", f"Lỗi tìm kiếm: {e}")
             logger.error(f"Document retrieval failed: {e}")
             raise
 
         # If no documents found, return a simple non-streaming fallback
         if not relevant_docs:
             logger.warning("No relevant documents found")
-            _status_step("⚠️", "Không tìm thấy tài liệu liên quan")
+            _status_step("[warn]", "Không tìm thấy tài liệu liên quan")
 
             def _no_info_stream():
                 yield "I don't have enough information to answer this question."
@@ -292,13 +292,13 @@ class ChatController:
 
         prompt = self._build_prompt(context, query, conversation_context)
         _status_step(
-            "🔧",
+            "[build]",
             f"Đã xây dựng prompt ({len(prompt)} ký tự, {len(context)} ngữ cảnh)",
         )
 
         # ── Step 5: Stream LLM response ──────────────────────────────
         elapsed = (_time.time() - t_start) * 1000
-        _status_step("🤖", f"Đang gọi LLM (chuẩn bị mất {elapsed:.0f}ms)...")
+        _status_step("[llm]", f"Đang gọi LLM (chuẩn bị mất {elapsed:.0f}ms)...")
 
         stream_gen = self.llm_service.generate_stream(prompt)
         return stream_gen, relevant_docs
@@ -510,13 +510,13 @@ JUSTIFICATION: <one sentence explanation>"""
         confidence = round(max(0.0, min(100.0, confidence)), 1)
 
         if confidence >= 80:
-            level = "🟢 Rất tự tin"
+            level = "High confidence"
         elif confidence >= 60:
-            level = "🟡 Khá tự tin"
+            level = "Moderate confidence"
         elif confidence >= 40:
-            level = "🟠 Ít tự tin"
+            level = "Low confidence"
         else:
-            level = "🔴 Không chắc chắn"
+            level = "Very low confidence"
 
         return confidence, level
 
@@ -630,7 +630,7 @@ Provide a clear, comprehensive answer:"""
             answer, sources = self._normal_retrieval(rewritten, k)
 
         if not answer:
-            return "I don't have enough information to answer this question.", [], 0.0, "🔴 Không chắc chắn", ""
+            return "I don't have enough information to answer this question.", [], 0.0, "Very low confidence", ""
 
         # Step 4: Self-evaluation
         context = "\n".join([s.content[:500] for s in sources[:3]])

@@ -2,7 +2,7 @@
 
 import streamlit as st
 from src.controllers.document_controller import DocumentController
-from src.views.components import UIComponents
+from src.views.components import UIComponents, icon
 from src.utils.logger import setup_logger
 from src.utils.constants import *
 from src.services.persistence_service import save_settings
@@ -29,7 +29,7 @@ class SettingsScreen:
     
     def render(self):
         """Render the settings screen."""
-        st.title("⚙️ Settings")
+        st.markdown(f"## {icon('settings')} Settings", unsafe_allow_html=True)
         
         st.markdown("""
         Configure the RAG (Retrieval-Augmented Generation) pipeline parameters.
@@ -59,7 +59,7 @@ class SettingsScreen:
     
     def _render_chunk_settings(self):
         """Render chunk configuration settings."""
-        st.subheader("📝 Text Chunking Configuration")
+        st.subheader("Text Chunking Configuration")
         
         col1, col2 = st.columns(2)
         
@@ -83,13 +83,13 @@ class SettingsScreen:
                 help="Overlap between consecutive chunks. Higher overlap = better continuity."
             )
         
-        if st.button("💾 Apply Chunk Settings", type="primary"):
+        if st.button("Apply Chunk Settings", type="primary"):
             st.session_state.chunk_size = chunk_size
             st.session_state.chunk_overlap = chunk_overlap
             self.document_controller.update_chunk_config(chunk_size, chunk_overlap)
             self._persist_current_settings()
 
-        st.markdown("#### 🧪 Chunk Strategy Benchmark")
+        st.markdown(f"#### {icon('science')} Chunk Strategy Benchmark", unsafe_allow_html=True)
         benchmark_query = st.text_input(
             "Benchmark query",
             value=st.session_state.get("chunk_benchmark_query", ""),
@@ -118,7 +118,7 @@ class SettingsScreen:
 
     def _render_retrieval_settings(self):
         """Render retrieval strategy options including hybrid and rerank."""
-        st.subheader("🔎 Retrieval Strategy")
+        st.subheader("Retrieval Strategy")
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -152,7 +152,7 @@ class SettingsScreen:
     
     def _render_llm_settings(self):
         """Render LLM configuration settings."""
-        st.subheader("🤖 LLM Configuration")
+        st.subheader("LLM Configuration")
 
         col1, col2 = st.columns(2)
 
@@ -209,7 +209,7 @@ class SettingsScreen:
 
         col_apply, col_preset = st.columns(2)
         with col_apply:
-            if st.button("💾 Apply LLM Settings", type="primary"):
+            if st.button("Apply LLM Settings", type="primary"):
                 st.session_state.llm_model = llm_model.strip()
                 st.session_state.llm_num_ctx = int(llm_num_ctx)
                 st.session_state.llm_num_predict = int(llm_num_predict)
@@ -218,7 +218,7 @@ class SettingsScreen:
                 self.components.success_alert("LLM settings updated and saved")
 
         with col_preset:
-            if st.button("🪶 Apply Low-RAM Preset"):
+            if st.button("Apply Low-RAM Preset"):
                 st.session_state.llm_model = LOW_MEMORY_FALLBACK_MODEL
                 st.session_state.llm_num_ctx = 256
                 st.session_state.llm_num_predict = 64
@@ -229,12 +229,12 @@ class SettingsScreen:
                 )
 
         st.info(
-            "💡 Tip: If you see memory errors, use an installed lightweight model, num_ctx=256, num_predict=64, keep_alive=0m."
+            "Tip: If you see memory errors, use an installed lightweight model, num_ctx=256, num_predict=64, keep_alive=0m."
         )
     
     def _render_system_info(self):
         """Render system information."""
-        st.subheader("🖥️ System Information")
+        st.subheader("System Information")
         
         col1, col2 = st.columns(2)
         
@@ -250,7 +250,7 @@ class SettingsScreen:
         st.code(OLLAMA_BASE_URL, language="text")
         
         # Connection test
-        if st.button("🔌 Test Ollama Connection"):
+        if st.button("Test Ollama Connection"):
             with self.components.loading_spinner("Testing connection..."):
                 try:
                     from src.services.llm_service import OllamaLLMService

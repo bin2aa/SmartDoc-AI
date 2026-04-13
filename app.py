@@ -32,6 +32,7 @@ from src.services.persistence_service import (
     load_faiss_index,
     save_faiss_index,
 )
+from src.views.components import icon
 from src.utils.logger import setup_logger
 from src.utils.constants import (
     PAGE_TITLE,
@@ -192,8 +193,9 @@ def main():
     # Initialize session state
     SessionStateManager.initialize()
     
-    # Custom CSS
+    # Custom CSS — Material Symbols font + base styles
     st.markdown("""
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
     <style>
         .main { padding-top: 2rem; }
     </style>
@@ -229,25 +231,31 @@ def main():
         # ── Status ─────────────────────────────────────────────
         if st.session_state.vector_store_initialized:
             docs_count = len(st.session_state.get("loaded_documents", []))
-            st.caption(f"🟢 {docs_count} doc(s) loaded")
+            st.markdown(
+                f'<span class="material-symbols-outlined" style="vertical-align:middle;font-size:1em;color:#4caf50;">check_circle</span> {docs_count} doc(s) loaded',
+                unsafe_allow_html=True,
+            )
         else:
-            st.caption("🟡 No documents")
+            st.markdown(
+                '<span class="material-symbols-outlined" style="vertical-align:middle;font-size:1em;color:#ff9800;">radio_button_unchecked</span> No documents',
+                unsafe_allow_html=True,
+            )
 
         st.markdown("---")
 
         # ── Navigation ─────────────────────────────────────────
         btn_type_chat = "primary" if current_page == "chat" else "secondary"
-        if st.button("💬 Chat", use_container_width=True, type=btn_type_chat):
+        if st.button("Chat", use_container_width=True, type=btn_type_chat):
             st.session_state.nav_page = "chat"
             st.rerun()
 
         btn_type_docs = "primary" if current_page == "documents" else "secondary"
-        if st.button("📄 Documents", use_container_width=True, type=btn_type_docs):
+        if st.button("Documents", use_container_width=True, type=btn_type_docs):
             st.session_state.nav_page = "documents"
             st.rerun()
 
         btn_type_set = "primary" if current_page == "settings" else "secondary"
-        if st.button("⚙️ Cài đặt", use_container_width=True, type=btn_type_set):
+        if st.button("Cài đặt", use_container_width=True, type=btn_type_set):
             st.session_state.nav_page = "settings"
             st.rerun()
 
@@ -255,13 +263,16 @@ def main():
 
         # ── Clear Chat (only on chat page) ─────────────────────
         if current_page == "chat":
-            if st.button("🗑️ Xóa lịch sử chat", use_container_width=True):
+            if st.button("Xóa lịch sử chat", use_container_width=True):
                 _clear_chat_history()
 
             st.markdown("---")
 
         # ── Model Switch (bottom) ──────────────────────────────
-        st.markdown("**🤖 Model**")
+        st.markdown(
+            f'**{icon("smart_toy")} Model**',
+            unsafe_allow_html=True,
+        )
         current_model = st.session_state.get('llm_model', DEFAULT_MODEL)
         model_options = list(AVAILABLE_MODELS)
         if current_model not in model_options:

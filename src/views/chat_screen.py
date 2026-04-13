@@ -3,7 +3,7 @@
 import streamlit as st
 from typing import List, Optional
 from src.controllers.chat_controller import ChatController
-from src.views.components import UIComponents
+from src.views.components import UIComponents, icon
 from src.models.document_model import Document
 from src.models.chat_model import ChatHistory
 from src.utils.logger import setup_logger
@@ -32,7 +32,7 @@ class ChatScreen:
     
     def render(self):
         """Render the chat screen."""
-        st.title("💬 Chat với tài liệu")
+        st.markdown(f"## {icon('chat')} Chat với tài liệu", unsafe_allow_html=True)
         
         # Check if vector store is ready
         if not st.session_state.get('vector_store_initialized', False):
@@ -76,16 +76,16 @@ class ChatScreen:
         """Show empty state when no documents loaded."""
         self.components.info_alert("Vui lòng tải tài liệu lên trước trong tab Documents")
         
-        st.markdown("""
-        ### 👋 Chào mừng đến SmartDoc AI!
+        st.markdown(f"""
+        ### {icon('waving_hand')} Chào mừng đến SmartDoc AI!
         
         Để bắt đầu:
-        1. Nhấn **📄 Documents** ở sidebar bên trái
+        1. Nhấn **Documents** ở sidebar bên trái
         2. Tải lên file PDF, DOCX, hoặc TXT
         3. Quay lại đây để đặt câu hỏi về tài liệu
         
         SmartDoc AI sử dụng RAG (Retrieval-Augmented Generation) để trả lời câu hỏi dựa trên tài liệu của bạn.
-        """)
+        """, unsafe_allow_html=True)
     
     def _render_chat_history(self):
         """Display all chat history messages."""
@@ -99,7 +99,7 @@ class ChatScreen:
         
         # Display ALL messages from history
         for msg_idx, message in enumerate(history.messages):
-            avatar = "🧑" if message.role == "user" else "🤖"
+            avatar = "user" if message.role == "user" else "assistant"
             self.components.chat_message(
                 role=message.role,
                 content=message.content,
@@ -118,7 +118,7 @@ class ChatScreen:
             citations: List of citation strings
             msg_idx: Message index for unique key generation
         """
-        with st.expander("📚 Xem nguồn tham khảo"):
+        with st.expander("Xem nguồn tham khảo"):
             for src_idx, citation in enumerate(citations, 1):
                 st.markdown(f"**Nguồn {src_idx}:** {citation}")
     
@@ -130,7 +130,7 @@ class ChatScreen:
             sources: List of source documents
             msg_idx: Message index for unique key generation
         """
-        with st.expander("📚 Xem nguồn tham khảo"):
+        with st.expander("Xem nguồn tham khảo"):
             for src_idx, source in enumerate(sources, 1):
                 source_file = source.metadata.get("source_file") or source.source_file
                 open_link = f"data/uploads/{source_file}" if source_file else ""
@@ -141,9 +141,9 @@ class ChatScreen:
 
                 overlap = source.metadata.get("used_term_overlap", 0)
                 if is_used:
-                    st.caption(f"✅ Được sử dụng trong câu trả lời (term overlap: {overlap})")
+                    st.caption(f"Được sử dụng trong câu trả lời (term overlap: {overlap})")
                 else:
-                    st.caption("ℹ️ Ngữ cảnh đã truy xuất")
+                    st.caption("Ngữ cảnh đã truy xuất")
 
                 preview = source.content[:300] + "..." if len(source.content) > 300 else source.content
                 if is_used:
@@ -169,26 +169,26 @@ class ChatScreen:
             logger.info(f"Chat input received: '{prompt[:50]}...'")
             
             # Display user message bubble directly (not from history)
-            with st.chat_message("user", avatar="🧑"):
+            with st.chat_message("user", avatar="user"):
                 st.markdown(prompt)
 
             # Process query with streaming
             try:
                 # Step 1: Retrieval with status indicator
-                with st.status("🔄 Đang xử lý câu hỏi...", expanded=True) as status:
+                with st.status("Đang xử lý câu hỏi...", expanded=True) as status:
                     stream_gen, sources = self.controller.process_query_stream(
                         prompt,
                         status_container=status,
                     )
                     # Mark retrieval complete
                     status.update(
-                        label="✅ Đã tìm thấy tài liệu liên quan!",
+                        label="Đã tìm thấy tài liệu liên quan!",
                         state="complete",
                         expanded=False,
                     )
 
                 # Step 2: Stream LLM response into a dedicated chat message bubble
-                with st.chat_message("assistant", avatar="🤖"):
+                with st.chat_message("assistant", avatar="assistant"):
                     response_text = st.write_stream(stream_gen)
 
                 # Step 3: Post-processing
@@ -270,7 +270,7 @@ class ChatScreen:
         if not stats:
             return
 
-        with st.expander("📈 Retrieval Metrics"):
+        with st.expander("Retrieval Metrics"):
             st.json(stats)
             comparison = st.session_state.get("retrieval_comparison")
             if comparison:
