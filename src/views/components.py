@@ -3,8 +3,6 @@
 import streamlit as st
 from typing import Optional, List
 
-from src.utils import ui_icons as icons
-
 
 class UIComponents:
     """Reusable UI components following Component Pattern."""
@@ -43,7 +41,7 @@ class UIComponents:
         Args:
             role: Message role (user/assistant)
             content: Message content
-            avatar: Emoji, short text, or ``:material/icon_name:`` for chat avatar
+            avatar: Optional avatar emoji
         """
         with st.chat_message(role, avatar=avatar):
             st.markdown(content)
@@ -70,7 +68,7 @@ class UIComponents:
             message: Error message
             details: Optional error details
         """
-        st.error(f"{icons.ERROR} {message}")
+        st.error(f"❌ {message}")
         if details:
             with st.expander("Error Details"):
                 st.code(details)
@@ -83,7 +81,7 @@ class UIComponents:
         Args:
             message: Success message
         """
-        st.success(f"{icons.CHECK_CIRCLE} {message}")
+        st.success(f"✅ {message}")
     
     @staticmethod
     def info_alert(message: str):
@@ -93,7 +91,7 @@ class UIComponents:
         Args:
             message: Info message
         """
-        st.info(f"{icons.INFO} {message}")
+        st.info(f"ℹ️ {message}")
     
     @staticmethod
     def warning_alert(message: str):
@@ -103,21 +101,18 @@ class UIComponents:
         Args:
             message: Warning message
         """
-        st.warning(f"{icons.WARNING} {message}")
+        st.warning(f"⚠️ {message}")
     
     @staticmethod
-    def sidebar_section(title: str, material_icon: Optional[str] = "push_pin"):
+    def sidebar_section(title: str, icon: str = "📌"):
         """
         Create sidebar section with title.
-
+        
         Args:
             title: Section title
-            material_icon: Material icon name (snake_case), no colons. None = text only.
+            icon: Section icon
         """
-        if material_icon:
-            st.sidebar.markdown(f"### :material/{material_icon}: {title}")
-        else:
-            st.sidebar.markdown(f"### {title}")
+        st.sidebar.markdown(f"### {icon} {title}")
     
     @staticmethod
     def metric_card(label: str, value: str, delta: Optional[str] = None):
