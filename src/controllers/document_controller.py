@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 from src.services.document_service import DocumentService
 from src.services.vector_store_service import AbstractVectorStoreService
+from src.services.persistence_service import save_faiss_index, save_loaded_docs, clear_all_state
 from src.utils.logger import setup_logger
 from src.utils.exceptions import DocumentLoadError
 from src.utils.constants import UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB
@@ -56,7 +57,7 @@ class DocumentController:
                 
         except Exception as e:
             logger.exception("Unexpected error in upload_and_process")
-            st.error(f"❌ Unexpected error: {str(e)}")
+            st.error(f"Unexpected error: {str(e)}")
             return False
 
     def upload_and_process_many(self, uploaded_files: List[Any]) -> Dict[str, Any]:
@@ -65,7 +66,7 @@ class DocumentController:
             return {"success_count": 0, "failed": []}
 
         if self.vector_service is None:
-            st.error("❌ Vector store not initialized")
+            st.error("Vector store not initialized")
             return {"success_count": 0, "failed": ["vector_service_unavailable"]}
 
         success_count = 0
@@ -86,7 +87,7 @@ class DocumentController:
                     logger.info("Loaded %s chunks from %s", len(documents), uploaded_file.name)
                 except DocumentLoadError as load_error:
                     failed.append(uploaded_file.name)
-                    st.error(f"❌ Cannot load {uploaded_file.name}: {str(load_error)}")
+                    st.error(f"Cannot load {uploaded_file.name}: {str(load_error)}")
                     continue
 
                 self.vector_service.add_documents(documents)
@@ -108,9 +109,13 @@ class DocumentController:
         st.session_state.vector_store_initialized = success_count > 0 or bool(st.session_state.get("vector_store_initialized", False))
 
         if success_count > 0:
-            st.success(f"✅ Successfully processed {success_count} document(s)")
+            # Persist FAISS index and document metadata to disk
+            save_faiss_index(self.vector_service)
+            save_loaded_docs(loaded_docs)
+            logger.info("Persisted FAISS index and document metadata to disk")
+            st.success(f"Successfully processed {success_count} document(s)")
         if failed:
-            st.warning("⚠️ Could not process: " + ", ".join(failed))
+            st.warning("Could not process: " + ", ".join(failed))
 
         return {
             "success_count": success_count,
@@ -129,19 +134,19 @@ class DocumentController:
             True if valid, False otherwise
         """
         if uploaded_file is None:
-            st.error("❌ No file uploaded")
+            st.error("No file uploaded")
             return False
         
         # Check file extension
         file_ext = Path(uploaded_file.name).suffix.lower()
         if file_ext not in ALLOWED_EXTENSIONS:
-            st.error(f"❌ Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+            st.error(f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
             return False
         
         # Check file size
         file_size_mb = uploaded_file.size / (1024 * 1024)
         if file_size_mb > MAX_FILE_SIZE_MB:
-            st.error(f"❌ File too large. Maximum size: {MAX_FILE_SIZE_MB}MB")
+            st.error(f"File too large. Maximum size: {MAX_FILE_SIZE_MB}MB")
             return False
         
         logger.info(f"File validation passed: {uploaded_file.name} ({file_size_mb:.2f}MB)")
@@ -173,23 +178,25 @@ class DocumentController:
             chunk_overlap: New chunk overlap
         """
         self.document_service.update_chunk_config(chunk_size, chunk_overlap)
-        st.success(f"✅ Updated chunk config: size={chunk_size}, overlap={chunk_overlap}")
+        st.success(f"Updated chunk config: size={chunk_size}, overlap={chunk_overlap}")
         logger.info(f"Chunk config updated via controller")
     
     def clear_vector_store(self) -> None:
-        """Clear vector store."""
+        """Clear vector store and all persisted state."""
         if self.vector_service:
             try:
                 self.vector_service.clear_store()
                 st.session_state.vector_store_initialized = False
                 st.session_state.loaded_documents = []
-                st.success("✅ Vector store cleared successfully")
-                logger.warning("Vector store cleared by user")
+                # Clear all persisted state from disk
+                clear_all_state()
+                st.success("Vector store cleared successfully")
+                logger.warning("Vector store and persisted state cleared by user")
             except Exception as e:
                 logger.error(f"Error clearing vector store: {e}")
-                st.error(f"❌ Error: {str(e)}")
+                st.error(f"Error: {str(e)}")
         else:
-            st.warning("⚠️ Vector store not initialized")
+            st.warning("Vector store not initialized")
 
     def benchmark_chunk_configs(
         self,

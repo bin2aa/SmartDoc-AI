@@ -2,9 +2,10 @@
 
 import streamlit as st
 from src.controllers.document_controller import DocumentController
-from src.views.components import UIComponents
+from src.views.components import UIComponents, icon
 from src.utils.logger import setup_logger
 from src.utils.constants import *
+from src.services.persistence_service import save_settings
 
 logger = setup_logger(__name__)
 
@@ -28,7 +29,7 @@ class SettingsScreen:
     
     def render(self):
         """Render the settings screen."""
-        st.title("⚙️ Settings")
+        st.markdown(f"## {icon('settings')} Settings", unsafe_allow_html=True)
         
         st.markdown("""
         Configure the RAG (Retrieval-Augmented Generation) pipeline parameters.
@@ -52,18 +53,13 @@ class SettingsScreen:
         self._render_llm_settings()
         
         st.markdown("---")
-
-        # n8n Integration
-        self._render_n8n_settings()
-
-        st.markdown("---")
         
         # System Info
         self._render_system_info()
     
     def _render_chunk_settings(self):
         """Render chunk configuration settings."""
-        st.subheader("📝 Text Chunking Configuration")
+        st.subheader("Text Chunking Configuration")
         
         col1, col2 = st.columns(2)
         
@@ -87,12 +83,13 @@ class SettingsScreen:
                 help="Overlap between consecutive chunks. Higher overlap = better continuity."
             )
         
-        if st.button("💾 Apply Chunk Settings", type="primary"):
+        if st.button("Apply Chunk Settings", type="primary"):
             st.session_state.chunk_size = chunk_size
             st.session_state.chunk_overlap = chunk_overlap
             self.document_controller.update_chunk_config(chunk_size, chunk_overlap)
+            self._persist_current_settings()
 
-        st.markdown("#### 🧪 Chunk Strategy Benchmark")
+        st.markdown(f"#### {icon('science')} Chunk Strategy Benchmark", unsafe_allow_html=True)
         benchmark_query = st.text_input(
             "Benchmark query",
             value=st.session_state.get("chunk_benchmark_query", ""),
@@ -121,7 +118,7 @@ class SettingsScreen:
 
     def _render_retrieval_settings(self):
         """Render retrieval strategy options including hybrid and rerank."""
-        st.subheader("🔎 Retrieval Strategy")
+        st.subheader("Retrieval Strategy")
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -149,19 +146,38 @@ class SettingsScreen:
             "Enable hybrid search to combine semantic and keyword retrieval. "
             "Enable re-ranking to improve relevance at the cost of higher latency."
         )
+
+        # Persist retrieval settings whenever they change
+        self._persist_current_settings()
     
     def _render_llm_settings(self):
         """Render LLM configuration settings."""
-        st.subheader("🤖 LLM Configuration")
+        st.subheader("LLM Configuration")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            llm_model = st.text_input(
+            current_model = st.session_state.get('llm_model', DEFAULT_MODEL)
+            model_options = list(AVAILABLE_MODELS)
+            if current_model not in model_options:
+                model_options.append(current_model)
+            model_options.append("Other (custom)...")
+
+            selected_model = st.selectbox(
                 "Ollama Model",
-                value=st.session_state.get('llm_model', DEFAULT_MODEL),
-                help="Example: qwen2.5:1.5b or qwen2.5:0.5b (lighter RAM)",
+                options=model_options,
+                index=model_options.index(current_model) if current_model in model_options else 0,
+                help="Select a model or choose 'Other' to enter a custom model name.",
             )
+
+            if selected_model == "Other (custom)...":
+                llm_model = st.text_input(
+                    "Custom Model Name",
+                    value=current_model if current_model not in AVAILABLE_MODELS else "",
+                    placeholder="e.g. qwen2.5:7b",
+                )
+            else:
+                llm_model = selected_model
 
             llm_num_ctx = st.slider(
                 "Context Window (num_ctx)",
@@ -193,30 +209,32 @@ class SettingsScreen:
 
         col_apply, col_preset = st.columns(2)
         with col_apply:
-            if st.button("💾 Apply LLM Settings", type="primary"):
+            if st.button("Apply LLM Settings", type="primary"):
                 st.session_state.llm_model = llm_model.strip()
                 st.session_state.llm_num_ctx = int(llm_num_ctx)
                 st.session_state.llm_num_predict = int(llm_num_predict)
                 st.session_state.llm_keep_alive = llm_keep_alive
-                self.components.success_alert("LLM settings updated")
+                self._persist_current_settings()
+                self.components.success_alert("LLM settings updated and saved")
 
         with col_preset:
-            if st.button("🪶 Apply Low-RAM Preset"):
+            if st.button("Apply Low-RAM Preset"):
                 st.session_state.llm_model = LOW_MEMORY_FALLBACK_MODEL
                 st.session_state.llm_num_ctx = 256
                 st.session_state.llm_num_predict = 64
                 st.session_state.llm_keep_alive = "0m"
+                self._persist_current_settings()
                 self.components.success_alert(
                     f"Applied low-RAM preset: model={LOW_MEMORY_FALLBACK_MODEL}, num_ctx=256, num_predict=64"
                 )
 
         st.info(
-            "💡 Tip: If you see memory errors, use an installed lightweight model, num_ctx=256, num_predict=64, keep_alive=0m."
+            "Tip: If you see memory errors, use an installed lightweight model, num_ctx=256, num_predict=64, keep_alive=0m."
         )
     
     def _render_system_info(self):
         """Render system information."""
-        st.subheader("🖥️ System Information")
+        st.subheader("System Information")
         
         col1, col2 = st.columns(2)
         
@@ -232,7 +250,7 @@ class SettingsScreen:
         st.code(OLLAMA_BASE_URL, language="text")
         
         # Connection test
-        if st.button("🔌 Test Ollama Connection"):
+        if st.button("Test Ollama Connection"):
             with self.components.loading_spinner("Testing connection..."):
                 try:
                     from src.services.llm_service import OllamaLLMService
@@ -244,28 +262,19 @@ class SettingsScreen:
                         details=str(e)
                     )
 
-    def _render_n8n_settings(self):
-        """Render n8n webhook integration settings."""
-        st.subheader("🔄 n8n Integration")
+    def _persist_current_settings(self) -> None:
+        """Save all current settings from session state to disk."""
+        settings = {
+            "chunk_size": st.session_state.get("chunk_size", DEFAULT_CHUNK_SIZE),
+            "chunk_overlap": st.session_state.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP),
+            "llm_model": st.session_state.get("llm_model", DEFAULT_MODEL),
+            "llm_num_ctx": st.session_state.get("llm_num_ctx", DEFAULT_NUM_CTX),
+            "llm_num_predict": st.session_state.get("llm_num_predict", DEFAULT_NUM_PREDICT),
+            "llm_keep_alive": st.session_state.get("llm_keep_alive", DEFAULT_KEEP_ALIVE),
+            "use_hybrid_search": st.session_state.get("use_hybrid_search", False),
+            "use_rerank": st.session_state.get("use_rerank", False),
+            "retrieval_k": st.session_state.get("retrieval_k", 3),
+        }
+        save_settings(settings)
+        logger.info("Settings persisted to disk")
 
-        n8n_enabled = st.checkbox(
-            "Enable n8n webhook on each chat",
-            value=st.session_state.get("n8n_enabled", False),
-            help="When enabled, every Streamlit chat Q&A is sent to n8n webhook.",
-        )
-
-        n8n_webhook_url = st.text_input(
-            "n8n Webhook URL",
-            value=st.session_state.get("n8n_webhook_url", "http://localhost:5678/webhook/smartdoc-chat"),
-            help="Example: http://localhost:5678/webhook/smartdoc-chat",
-        )
-
-        if st.button("💾 Apply n8n Settings"):
-            st.session_state.n8n_enabled = n8n_enabled
-            st.session_state.n8n_webhook_url = n8n_webhook_url.strip()
-            self.components.success_alert("n8n settings updated")
-
-        if st.session_state.get("n8n_enabled", False):
-            st.info("n8n is enabled. Streamlit chat events will be posted to the configured webhook.")
-        else:
-            st.warning("n8n is currently disabled.")
