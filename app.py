@@ -347,7 +347,6 @@ def main():
             st.rerun()
 
         st.markdown("---")
-
         # Footer
         st.markdown("""
         <div style='text-align: center; color: #666; font-size: 0.75em;'>

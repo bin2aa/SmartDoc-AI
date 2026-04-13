@@ -74,12 +74,7 @@ class DocumentScreen:
             col1, col2, col3 = st.columns([1, 2, 1])
 
             with col2:
-                if st.button(
-                    "Process documents",
-                    icon=icons.CLOUD_UPLOAD,
-                    use_container_width=True,
-                    type="primary",
-                ):
+                if st.button("📤 Process Documents", use_container_width=True, type="primary"):
                     with self.components.loading_spinner("Processing documents..."):
                         # --- TRUYỀN BIẾN OCR XUỐNG CONTROLLER ---
                         result = self.controller.upload_and_process_many(uploaded_files, use_ocr=enable_ocr)
@@ -125,27 +120,18 @@ class DocumentScreen:
 
     def _render_advanced_actions(self):
         """Render advanced document actions."""
-        st.subheader(f"{icons.TUNE} Advanced actions")
+        st.subheader("⚙️ Advanced Actions")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            confirm_clear = st.checkbox("Confirm clear all documents and index")
-            if st.button(
-                "Clear vector store",
-                icon=icons.DELETE,
-                use_container_width=True,
-                disabled=not confirm_clear,
-            ):
+            confirm_clear = st.checkbox("⚠️ Confirm clear all documents and index")
+            if st.button("🗑️ Clear Vector Store", use_container_width=True, disabled=not confirm_clear):
                 if confirm_clear:
                     self.controller.clear_vector_store()
                     st.rerun()
 
         with col2:
-            if st.button(
-                "View upload folder",
-                icon=icons.FOLDER_OPEN,
-                use_container_width=True,
-            ):
+            if st.button("ℹ️ View Upload Folder", use_container_width=True):
                 from src.utils.constants import UPLOAD_DIR
                 st.code(str(UPLOAD_DIR))

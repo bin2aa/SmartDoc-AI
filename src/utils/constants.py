@@ -166,5 +166,5 @@ CORAG_HALLUCINATION_GUARD_SHORT_LIMIT = 100  # Below this length = true refusal 
 
 # UI Configuration
 PAGE_TITLE = "SmartDoc AI"
-PAGE_ICON = ":material/menu_book:"
+PAGE_ICON = "📚"
 
