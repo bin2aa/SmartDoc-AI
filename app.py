@@ -24,7 +24,6 @@ from src.views.document_screen import DocumentScreen
 from src.views.settings_screen import SettingsScreen
 from src.models.chat_model import ChatHistory
 from src.utils.logger import setup_logger
-from src.utils import ui_icons as icons
 from src.utils.constants import (
     PAGE_TITLE,
     PAGE_ICON,
@@ -39,12 +38,6 @@ from src.utils.constants import (
 )
 
 logger = setup_logger(__name__)
-
-_NAV_LABELS = {
-    "chat": f"{icons.CHAT} Chat",
-    "documents": f"{icons.DESCRIPTION} Documents",
-    "settings": f"{icons.SETTINGS} Settings",
-}
 
 
 @st.cache_resource(show_spinner=False)
@@ -204,28 +197,31 @@ def main():
     
     # Sidebar navigation
     with st.sidebar:
-        st.title(f"{icons.MENU_BOOK} {PAGE_TITLE}")
+        st.title(f"{PAGE_ICON} {PAGE_TITLE}")
         st.markdown("**Intelligent Document Q&A System**")
         st.markdown("---")
-
+        
+        # Navigation menu
         page = st.radio(
             "Navigation",
-            options=list(_NAV_LABELS.keys()),
-            format_func=lambda k: _NAV_LABELS[k],
-            label_visibility="collapsed",
+            ["💬 Chat", "📄 Documents", "⚙️ Settings"],
+            label_visibility="collapsed"
         )
-
+        
         st.markdown("---")
-
-        st.markdown(f"### {icons.BAR_CHART} Status")
-
+        
+        # Status indicators
+        st.markdown("### 📊 Status")
+        
+        # Vector store status
         if st.session_state.vector_store_initialized:
-            st.success(f"{icons.CHECK_CIRCLE} Documents loaded")
+            st.success("🟢 Documents Loaded")
         else:
-            st.warning(f"{icons.FOLDER_OFF} No documents yet")
-
+            st.warning("🟡 No Documents")
+        
+        # Chat history status
         num_messages = len(st.session_state.chat_history)
-        st.info(f"{icons.FORUM} {num_messages} messages")
+        st.info(f"💬 {num_messages} messages")
         
         st.markdown("---")
         
@@ -238,15 +234,15 @@ def main():
         """, unsafe_allow_html=True)
     
     # Route to appropriate screen
-    if page == "chat":
+    if page == "💬 Chat":
         chat_screen = ChatScreen(chat_controller)
         chat_screen.render()
-
-    elif page == "documents":
+    
+    elif page == "📄 Documents":
         doc_screen = DocumentScreen(document_controller)
         doc_screen.render()
-
-    elif page == "settings":
+    
+    elif page == "⚙️ Settings":
         settings_screen = SettingsScreen(document_controller)
         settings_screen.render()
 
