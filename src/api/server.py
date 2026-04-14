@@ -301,11 +301,24 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
                 detail="No documents loaded. Please upload documents first."
             )
         
+        confidence = 0.85
+        confidence_level = None
+        self_evaluation = None
+
         # Process query
-        answer, source_docs = chat_controller.process_query(
-            request.query,
-            k=request.k
-        )
+        if request.use_self_rag:
+            answer, source_docs, confidence_score, confidence_level, self_evaluation = (
+                chat_controller.process_query_with_self_rag(
+                    request.query,
+                    k=request.k,
+                )
+            )
+            confidence = max(0.0, min(1.0, round(confidence_score / 100.0, 3)))
+        else:
+            answer, source_docs = chat_controller.process_query(
+                request.query,
+                k=request.k
+            )
         
         # Format sources
         sources = [
@@ -323,7 +336,9 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
             answer=answer,
             sources=sources,
             timestamp=datetime.now().isoformat(),
-            confidence=0.85
+            confidence=confidence,
+            confidence_level=confidence_level,
+            self_evaluation=self_evaluation,
         )
         
     except HTTPException:
@@ -359,7 +374,8 @@ async def batch_query(request: BatchQueryRequest) -> List[QueryResponse]:
         try:
             query_request = QueryRequest(
                 query=query,
-                k=request.k
+                k=request.k,
+                use_self_rag=request.use_self_rag,
             )
             result = await query_documents(query_request)
             results.append(result)

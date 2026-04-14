@@ -105,10 +105,25 @@ class ChatScreen:
                 content=message.content,
                 avatar=avatar
             )
+
+            if message.role == "assistant" and message.metadata and message.metadata.get('used_self_rag'):
+                self._render_self_rag_metadata(message.metadata)
             
             # Display sources if available
             if message.role == "assistant" and message.metadata and message.metadata.get('source_citations'):
                 self._render_source_citations(message.metadata['source_citations'], msg_idx)
+
+    @staticmethod
+    def _render_self_rag_metadata(metadata: dict):
+        """Render confidence and self-evaluation details for Self-RAG responses."""
+        confidence_score = metadata.get("confidence_score")
+        confidence_level = metadata.get("confidence_level")
+        self_eval = metadata.get("self_eval_justification")
+
+        if confidence_score is not None and confidence_level:
+            st.caption(f"Do tin cay Self-RAG: {confidence_score}% ({confidence_level})")
+        if self_eval:
+            st.caption(f"Tu danh gia: {self_eval}")
     
     def _render_source_citations(self, citations: List[str], msg_idx: int):
         """
@@ -167,6 +182,11 @@ class ChatScreen:
         """
         if prompt := st.chat_input("Đặt câu hỏi về tài liệu của bạn..."):
             logger.info(f"Chat input received: '{prompt[:50]}...'")
+            use_self_rag = bool(st.session_state.get("use_self_rag", False))
+            retrieval_k = int(st.session_state.get("retrieval_k", 3))
+            st.session_state.is_processing_query = True
+            # Avoid rendering retrieval metrics in the same render cycle as loading/status.
+            st.session_state.skip_retrieval_metrics_once = True
             
             # Display user message bubble directly (not from history)
             with st.chat_message("user", avatar="user"):
@@ -174,25 +194,53 @@ class ChatScreen:
 
             # Process query with streaming
             try:
-                # Step 1: Retrieval with status indicator
-                with st.status("Đang xử lý câu hỏi...", expanded=True) as status:
-                    stream_gen, sources = self.controller.process_query_stream(
-                        prompt,
-                        status_container=status,
-                    )
-                    # Mark retrieval complete
-                    status.update(
-                        label="Đã tìm thấy tài liệu liên quan!",
-                        state="complete",
-                        expanded=False,
-                    )
+                confidence_score = None
+                confidence_level = None
+                self_eval_justification = None
 
-                # Step 2: Stream LLM response into a dedicated chat message bubble
-                with st.chat_message("assistant", avatar="assistant"):
-                    response_text = st.write_stream(stream_gen)
+                if use_self_rag:
+                    with st.status("Đang xử lý câu hỏi...", expanded=True) as status:
+                        status.write(f"[search] **Phân tích câu hỏi:** `{prompt}`")
+                        status.write("[rewrite] Query rewriting + Self-RAG")
+                        status.write("[retrieve] Retrieval / multi-hop reasoning")
+                        response_text, sources, confidence_score, confidence_level, self_eval_justification = (
+                            self.controller.process_query_with_self_rag(prompt, k=retrieval_k)
+                        )
+                        status.write("[eval] Self-evaluation + confidence scoring")
+                        status.update(
+                            label="Đã tìm thấy tài liệu liên quan!",
+                            state="complete",
+                            expanded=False,
+                        )
 
-                # Step 3: Post-processing
-                self.controller._mark_used_chunks(answer=response_text, sources=sources)
+                    with st.chat_message("assistant", avatar="assistant"):
+                        response_text = st.write_stream(self._stream_text(response_text))
+
+                    if confidence_score is not None and confidence_level:
+                        st.caption(f"Do tin cay Self-RAG: {confidence_score}% ({confidence_level})")
+                    if self_eval_justification:
+                        st.caption(f"Tu danh gia: {self_eval_justification}")
+                else:
+                    # Step 1: Retrieval with status indicator
+                    with st.status("Đang xử lý câu hỏi...", expanded=True) as status:
+                        stream_gen, sources = self.controller.process_query_stream(
+                            prompt,
+                            status_container=status,
+                        )
+                        # Mark retrieval complete
+                        status.update(
+                            label="Đã tìm thấy tài liệu liên quan!",
+                            state="complete",
+                            expanded=False,
+                        )
+
+                    # Step 2: Stream LLM response into a dedicated chat message bubble
+                    with st.chat_message("assistant", avatar="assistant"):
+                        response_text = st.write_stream(stream_gen)
+
+                    # Step 3: Post-processing
+                    self.controller._mark_used_chunks(answer=response_text, sources=sources)
+
                 formatted_answer = self.controller.format_reply_for_streamlit(response_text, sources)
 
                 # Step 4: Convert sources to serializable citation strings
@@ -205,6 +253,10 @@ class ChatScreen:
                             logger.warning(f"Failed to get citation for source: {e}")
                             source_citations.append("[Unknown source]")
 
+                # Show sources immediately after answer for both modes
+                if source_citations:
+                    self._render_source_citations(source_citations, msg_idx=-1)
+
                 # Step 5: NOW add both messages to history (after display is complete).
                 # Store source_citations (list of strings) instead of Document objects.
                 history = st.session_state.get('chat_history')
@@ -214,7 +266,15 @@ class ChatScreen:
                     st.session_state.chat_history = history
                 
                 history.add_message("user", prompt)
-                assistant_metadata = {'source_citations': source_citations} if source_citations else None
+                assistant_metadata = {
+                    'source_citations': source_citations,
+                    'used_self_rag': use_self_rag,
+                }
+                if use_self_rag:
+                    assistant_metadata['confidence_score'] = confidence_score
+                    assistant_metadata['confidence_level'] = confidence_level
+                    assistant_metadata['self_eval_justification'] = self_eval_justification
+
                 history.add_message("assistant", formatted_answer, metadata=assistant_metadata)
                 logger.info(f"Added user + assistant messages to history (total: {len(history)})")
 
@@ -250,6 +310,19 @@ class ChatScreen:
                     "Không thể xử lý câu hỏi của bạn",
                     details=str(e)
                 )
+            finally:
+                st.session_state.is_processing_query = False
+                if st.session_state.get("skip_retrieval_metrics_once", False):
+                    st.session_state.skip_retrieval_metrics_once = False
+                    st.rerun()
+
+    @staticmethod
+    def _stream_text(text: str):
+        """Yield text chunks so non-streaming answers can use stream-like UI."""
+        if not text:
+            return
+        for token in text.split(" "):
+            yield token + " "
     
     def _save_user_message(self, prompt: str):
         """Save user message to history even when processing fails."""
@@ -266,7 +339,15 @@ class ChatScreen:
     
     def _render_retrieval_metrics(self):
         """Show retrieval strategy metrics for hybrid/pure-vector comparison."""
+        if st.session_state.get("is_processing_query", False):
+            return
+
         stats = st.session_state.get("last_retrieval_stats", {})
+        # Do not show retrieval metrics when there is no chat history
+        history = st.session_state.get('chat_history')
+        if not history or (hasattr(history, 'messages') and len(history.messages) == 0) or (isinstance(history, list) and len(history) == 0):
+            return
+
         if not stats:
             return
 
@@ -274,5 +355,62 @@ class ChatScreen:
             st.json(stats)
             comparison = st.session_state.get("retrieval_comparison")
             if comparison:
-                st.markdown("**Hybrid vs Vector**")
-                st.write(comparison)
+                hybrid_section = comparison.get("hybrid_vs_vector")
+                rerank_section = comparison.get("rerank_vs_biencoder")
+
+                if hybrid_section:
+                    st.markdown("**Hybrid vs Vector**")
+                    st.write(hybrid_section)
+
+                if rerank_section:
+                    st.markdown("**Cross-Encoder Re-rank vs Bi-Encoder**")
+                    st.write(rerank_section)
+
+    def _render_rerank_benchmark(self):
+        """Run multi-query benchmark for bi-encoder vs cross-encoder reranking."""
+        with st.expander("Re-ranking Benchmark"):
+            st.caption(
+                "Nhập nhiều câu hỏi (mỗi dòng 1 câu) để đo độ trễ và mức thay đổi thứ hạng "
+                "giữa bi-encoder và cross-encoder re-ranking."
+            )
+
+            default_queries = st.session_state.get("rerank_benchmark_queries", "")
+            query_blob = st.text_area(
+                "Benchmark queries",
+                value=default_queries,
+                height=120,
+                placeholder="Ví dụ:\nMục tiêu chính của tài liệu là gì?\nĐiểm khác nhau giữa A và B?",
+            )
+            st.session_state.rerank_benchmark_queries = query_blob
+
+            col1, col2 = st.columns(2)
+            with col1:
+                benchmark_k = st.selectbox(
+                    "Top-K benchmark",
+                    options=[3, 5, 8, 10],
+                    index=[3, 5, 8, 10].index(st.session_state.get("retrieval_k", 3))
+                    if st.session_state.get("retrieval_k", 3) in [3, 5, 8, 10]
+                    else 0,
+                )
+            with col2:
+                run_benchmark = st.button("Run Re-ranking Benchmark")
+
+            if run_benchmark:
+                queries = [line.strip() for line in query_blob.splitlines() if line.strip()]
+                try:
+                    result = self.controller.benchmark_rerank_queries(queries=queries, k=benchmark_k)
+                    st.session_state.rerank_benchmark_result = result
+                    logger.info("Ran rerank benchmark with %s queries", len(queries))
+                except Exception as benchmark_error:
+                    self.components.error_alert(
+                        "Không thể chạy benchmark re-ranking",
+                        details=str(benchmark_error),
+                    )
+
+            result = st.session_state.get("rerank_benchmark_result")
+            if result:
+                st.markdown("**Benchmark Summary**")
+                st.write(result.get("summary", {}))
+                rows = result.get("rows", [])
+                if rows:
+                    st.dataframe(rows, use_container_width=True)
