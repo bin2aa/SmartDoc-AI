@@ -1,6 +1,8 @@
 """Chat controller for handling chat operations."""
 
 from typing import Any, Dict, Generator, Optional, List, Tuple
+import re
+import time
 import streamlit as st
 from src.services.llm_service import AbstractLLMService, OllamaLLMService
 from src.services.vector_store_service import AbstractVectorStoreService
@@ -101,23 +103,19 @@ class ChatController:
                 }
 
             st.session_state.last_retrieval_stats = retrieval_stats
-
-            if use_hybrid and hasattr(self.vector_service, "search"):
-                vector_only_docs, vector_stats = self.vector_service.search(
-                    query=rewritten_query,
-                    k=retrieval_k,
-                    metadata_filters=metadata_filters,
-                    use_hybrid=False,
-                    rerank=False,
-                    fetch_k=max(retrieval_k * 4, 20),
-                )
-                st.session_state.retrieval_comparison = {
-                    "vector_results": len(vector_only_docs),
-                    "hybrid_results": len(relevant_docs),
-                    "vector_ms": vector_stats.get("total_time_ms", vector_stats.get("vector_time_ms", 0.0)),
-                    "hybrid_ms": retrieval_stats.get("total_time_ms", 0.0),
-                    "overlap": retrieval_stats.get("overlap_count", 0),
-                }
+            comparison = self._build_retrieval_comparison(
+                query=rewritten_query,
+                k=retrieval_k,
+                metadata_filters=metadata_filters,
+                use_hybrid=use_hybrid,
+                use_rerank=use_rerank,
+                retrieved_docs=relevant_docs,
+                retrieval_stats=retrieval_stats,
+            )
+            if comparison:
+                st.session_state.retrieval_comparison = comparison
+            else:
+                st.session_state.pop("retrieval_comparison", None)
 
             logger.info(f"Retrieved {len(relevant_docs)} relevant documents")
         except Exception as e:
@@ -241,23 +239,19 @@ class ChatController:
                 }
 
             st.session_state.last_retrieval_stats = retrieval_stats
-
-            if use_hybrid and hasattr(self.vector_service, "search"):
-                vector_only_docs, vector_stats = self.vector_service.search(
-                    query=rewritten_query,
-                    k=retrieval_k,
-                    metadata_filters=metadata_filters,
-                    use_hybrid=False,
-                    rerank=False,
-                    fetch_k=max(retrieval_k * 4, 20),
-                )
-                st.session_state.retrieval_comparison = {
-                    "vector_results": len(vector_only_docs),
-                    "hybrid_results": len(relevant_docs),
-                    "vector_ms": vector_stats.get("total_time_ms", vector_stats.get("vector_time_ms", 0.0)),
-                    "hybrid_ms": retrieval_stats.get("total_time_ms", 0.0),
-                    "overlap": retrieval_stats.get("overlap_count", 0),
-                }
+            comparison = self._build_retrieval_comparison(
+                query=rewritten_query,
+                k=retrieval_k,
+                metadata_filters=metadata_filters,
+                use_hybrid=use_hybrid,
+                use_rerank=use_rerank,
+                retrieved_docs=relevant_docs,
+                retrieval_stats=retrieval_stats,
+            )
+            if comparison:
+                st.session_state.retrieval_comparison = comparison
+            else:
+                st.session_state.pop("retrieval_comparison", None)
 
             retrieval_ms = (_time.time() - t_retrieval) * 1000
             total_ms = retrieval_stats.get("total_time_ms", retrieval_ms)
@@ -302,6 +296,155 @@ class ChatController:
 
         stream_gen = self.llm_service.generate_stream(prompt)
         return stream_gen, relevant_docs
+
+    @staticmethod
+    def _doc_identity(doc: Document) -> str:
+        """Build a deterministic doc identifier for overlap/rank comparisons."""
+        return (
+            f"{doc.metadata.get('source', '')}|"
+            f"{doc.metadata.get('page', '')}|"
+            f"{doc.metadata.get('chunk_index', '')}|"
+            f"{doc.content[:160]}"
+        )
+
+    def _build_retrieval_comparison(
+        self,
+        query: str,
+        k: int,
+        metadata_filters: Dict[str, Any],
+        use_hybrid: bool,
+        use_rerank: bool,
+        retrieved_docs: List[Document],
+        retrieval_stats: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create comparison metrics for hybrid/vector and rerank/bi-encoder."""
+        if not hasattr(self.vector_service, "search"):
+            return {}
+
+        fetch_k = max(k * 4, 20)
+        comparison: Dict[str, Any] = {}
+
+        if use_hybrid:
+            vector_docs, vector_stats = self.vector_service.search(
+                query=query,
+                k=k,
+                metadata_filters=metadata_filters,
+                use_hybrid=False,
+                rerank=False,
+                fetch_k=fetch_k,
+            )
+            overlap = len(
+                {self._doc_identity(doc) for doc in vector_docs}.intersection(
+                    {self._doc_identity(doc) for doc in retrieved_docs}
+                )
+            )
+            comparison["hybrid_vs_vector"] = {
+                "vector_results": len(vector_docs),
+                "hybrid_results": len(retrieved_docs),
+                "vector_ms": vector_stats.get("total_time_ms", vector_stats.get("vector_time_ms", 0.0)),
+                "hybrid_ms": retrieval_stats.get("total_time_ms", 0.0),
+                "overlap": overlap,
+            }
+
+        if use_rerank:
+            bi_docs, bi_stats = self.vector_service.search(
+                query=query,
+                k=k,
+                metadata_filters=metadata_filters,
+                use_hybrid=use_hybrid,
+                rerank=False,
+                fetch_k=fetch_k,
+            )
+
+            rerank_ids = [self._doc_identity(doc) for doc in retrieved_docs]
+            bi_ids = [self._doc_identity(doc) for doc in bi_docs]
+            top_k = min(len(rerank_ids), len(bi_ids), k)
+            rank_changes = sum(1 for idx in range(top_k) if rerank_ids[idx] != bi_ids[idx])
+            overlap = len(set(rerank_ids).intersection(set(bi_ids)))
+
+            comparison["rerank_vs_biencoder"] = {
+                "mode": "hybrid+rerank" if use_hybrid else "vector+rerank",
+                "bi_encoder_results": len(bi_docs),
+                "rerank_results": len(retrieved_docs),
+                "bi_encoder_ms": bi_stats.get("total_time_ms", bi_stats.get("vector_time_ms", 0.0)),
+                "rerank_ms": retrieval_stats.get("total_time_ms", 0.0),
+                "rerank_only_ms": retrieval_stats.get("rerank_time_ms", 0.0),
+                "topk_overlap": overlap,
+                "topk_rank_changes": rank_changes,
+            }
+
+        return comparison
+
+    def benchmark_rerank_queries(self, queries: List[str], k: int = 3) -> Dict[str, Any]:
+        """Run A/B benchmark for bi-encoder vs cross-encoder rerank on multiple queries."""
+        if self.vector_service is None or not self.vector_service.is_initialized:
+            raise VectorStoreError("Please upload documents first")
+        if not hasattr(self.vector_service, "search"):
+            raise VectorStoreError("Advanced search API is unavailable")
+
+        cleaned_queries = [query.strip() for query in queries if query and query.strip()]
+        if not cleaned_queries:
+            raise ValueError("Please provide at least one benchmark query")
+
+        use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
+        metadata_filters: Dict[str, Any] = {}
+        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_file_types = st.session_state.get("active_file_type_filters", [])
+        if selected_sources:
+            metadata_filters["source_files"] = selected_sources
+        if selected_file_types:
+            metadata_filters["file_types"] = selected_file_types
+
+        rows: List[Dict[str, Any]] = []
+        for query in cleaned_queries:
+            bi_docs, bi_stats = self.vector_service.search(
+                query=query,
+                k=k,
+                metadata_filters=metadata_filters,
+                use_hybrid=use_hybrid,
+                rerank=False,
+                fetch_k=max(k * 4, 20),
+            )
+            rerank_docs, rerank_stats = self.vector_service.search(
+                query=query,
+                k=k,
+                metadata_filters=metadata_filters,
+                use_hybrid=use_hybrid,
+                rerank=True,
+                fetch_k=max(k * 4, 20),
+            )
+
+            bi_ids = [self._doc_identity(doc) for doc in bi_docs]
+            rerank_ids = [self._doc_identity(doc) for doc in rerank_docs]
+            top_k = min(len(bi_ids), len(rerank_ids), k)
+            overlap = len(set(bi_ids).intersection(set(rerank_ids)))
+            rank_changes = sum(1 for idx in range(top_k) if bi_ids[idx] != rerank_ids[idx])
+
+            rows.append(
+                {
+                    "query": query,
+                    "bi_encoder_ms": bi_stats.get("total_time_ms", bi_stats.get("vector_time_ms", 0.0)),
+                    "rerank_ms": rerank_stats.get("total_time_ms", 0.0),
+                    "rerank_only_ms": rerank_stats.get("rerank_time_ms", 0.0),
+                    "topk_overlap": overlap,
+                    "topk_rank_changes": rank_changes,
+                }
+            )
+
+        bi_latencies = [row["bi_encoder_ms"] for row in rows]
+        rerank_latencies = [row["rerank_ms"] for row in rows]
+        rerank_only_latencies = [row["rerank_only_ms"] for row in rows]
+        rank_changes = [row["topk_rank_changes"] for row in rows]
+
+        summary = {
+            "queries": len(rows),
+            "avg_bi_encoder_ms": round(sum(bi_latencies) / len(bi_latencies), 2),
+            "avg_rerank_ms": round(sum(rerank_latencies) / len(rerank_latencies), 2),
+            "avg_rerank_only_ms": round(sum(rerank_only_latencies) / len(rerank_only_latencies), 2),
+            "avg_rank_changes": round(sum(rank_changes) / len(rank_changes), 2),
+            "mode": "hybrid" if use_hybrid else "vector",
+        }
+        return {"rows": rows, "summary": summary}
 
     def _build_prompt(self, context: str, question: str, chat_history_context: str) -> str:
         """
@@ -369,6 +512,55 @@ ANSWER:"""
         rewritten = f"{stripped} (follow-up to previous question: {previous_question})"
         logger.info("Rewrote follow-up query for conversational retrieval")
         return rewritten
+
+    @staticmethod
+    def _detect_target_language(query: str) -> str:
+        """Detect target output language from user query (vi/en/zh)."""
+        lowered = (query or "").lower()
+        if re.search(r"[\u4e00-\u9fff]", query or ""):
+            return "zh"
+        vietnamese_markers = [
+            "đ", "ă", "â", "ê", "ô", "ơ", "ư", "á", "à", "ả", "ã", "ạ",
+            "câu", "tài liệu", "và", "không", "như thế nào", "là gì",
+        ]
+        if any(marker in lowered for marker in vietnamese_markers):
+            return "vi"
+        return "en"
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        """Check whether text contains CJK characters."""
+        return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+    def _enforce_answer_language(self, answer: str, query: str) -> str:
+        """Force answer language to follow user query when model drifts."""
+        target_lang = self._detect_target_language(query)
+        if target_lang == "zh":
+            return answer
+
+        if not self._contains_cjk(answer):
+            return answer
+
+        language_name = "Vietnamese" if target_lang == "vi" else "English"
+        rewrite_prompt = f"""Rewrite the answer below into {language_name}.
+
+Requirements:
+1) Keep the meaning unchanged.
+2) Do not add new facts.
+3) Do not use Chinese.
+4) Keep concise (3-4 sentences).
+
+ANSWER:
+{answer}
+
+REWRITTEN ANSWER:"""
+        try:
+            rewritten = self.llm_service.generate(rewrite_prompt).strip()
+            if rewritten:
+                return rewritten
+        except Exception as rewrite_error:
+            logger.warning(f"Language enforcement rewrite failed: {rewrite_error}")
+        return answer
 
     @staticmethod
     def _mark_used_chunks(answer: str, sources: List[Document]) -> None:
@@ -460,12 +652,12 @@ Rate the answer on these criteria (1=poor, 5=excellent):
 
 Respond in this EXACT format:
 SCORE: <number 1-5>
-JUSTIFICATION: <one sentence explanation>"""
+JUSTIFICATION: <one concise sentence in Vietnamese explaining the rating>"""
 
         try:
             response = self.llm_service.generate(eval_prompt)
             score = 3.0  # default
-            justification = "No justification provided"
+            justification = "Chưa có giải thích"
 
             for line in response.strip().split("\n"):
                 line = line.strip()
@@ -482,7 +674,7 @@ JUSTIFICATION: <one sentence explanation>"""
             return score, justification
         except Exception as e:
             logger.warning(f"Self-evaluation failed: {e}")
-            return 3.0, f"Evaluation unavailable: {str(e)}"
+            return 3.0, f"Không thể tự đánh giá: {str(e)}"
 
     def _compute_confidence(self, sources: List[Document], self_eval_score: float) -> Tuple[float, str]:
         """
@@ -510,17 +702,22 @@ JUSTIFICATION: <one sentence explanation>"""
         confidence = round(max(0.0, min(100.0, confidence)), 1)
 
         if confidence >= 80:
-            level = "High confidence"
+            level = "Độ tin cậy cao"
         elif confidence >= 60:
-            level = "Moderate confidence"
+            level = "Độ tin cậy trung bình"
         elif confidence >= 40:
-            level = "Low confidence"
+            level = "Độ tin cậy thấp"
         else:
-            level = "Very low confidence"
+            level = "Độ tin cậy rất thấp"
 
         return confidence, level
 
-    def _multi_hop_reasoning(self, query: str, k: int = 3) -> Tuple[str, List[Document]]:
+    def _multi_hop_reasoning(
+        self,
+        query: str,
+        k: int = 3,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, List[Document]]:
         """
         Break complex questions into sub-queries for multi-hop reasoning.
 
@@ -528,14 +725,19 @@ JUSTIFICATION: <one sentence explanation>"""
             Tuple of (synthesized answer, all sources)
         """
         # Generate sub-queries
+        target_lang = self._detect_target_language(query)
+        language_name = "Vietnamese" if target_lang == "vi" else ("Chinese" if target_lang == "zh" else "English")
+
         decompose_prompt = f"""Break this complex question into 2-3 simpler sub-questions.
 Each sub-question should focus on one aspect.
+    Write sub-questions in {language_name}.
 
 QUESTION: {query}
 
 Respond with one sub-question per line, numbered 1-3. No explanation needed."""
 
         try:
+            total_start = time.perf_counter()
             response = self.llm_service.generate(decompose_prompt)
             sub_queries = []
             for line in response.strip().split("\n"):
@@ -554,13 +756,30 @@ Respond with one sub-question per line, numbered 1-3. No explanation needed."""
             # Retrieve for each sub-query
             all_sources: List[Document] = []
             sub_answers: List[str] = []
+            hop_details: List[Dict[str, Any]] = []
 
             for sub_q in sub_queries[:3]:  # max 3 hops
                 try:
+                    hop_start = time.perf_counter()
                     if hasattr(self.vector_service, "search"):
-                        docs, _ = self.vector_service.search(query=sub_q, k=k, use_hybrid=False, rerank=False)
+                        docs, _ = self.vector_service.search(
+                            query=sub_q,
+                            k=k,
+                            metadata_filters=metadata_filters,
+                            use_hybrid=False,
+                            rerank=False,
+                            fetch_k=max(k * 4, 20),
+                        )
                     else:
                         docs = self.vector_service.similarity_search(sub_q, k=k)
+
+                    hop_details.append(
+                        {
+                            "sub_query": sub_q,
+                            "results": len(docs),
+                            "time_ms": round((time.perf_counter() - hop_start) * 1000, 2),
+                        }
+                    )
 
                     all_sources.extend(docs)
                     if docs:
@@ -580,7 +799,20 @@ Respond with one sub-question per line, numbered 1-3. No explanation needed."""
 
             # Synthesize
             if sub_answers:
+                st.session_state.last_retrieval_stats = {
+                    "mode": "self_rag_multi_hop",
+                    "hops": len(hop_details),
+                    "hop_details": hop_details,
+                    "total_time_ms": round((time.perf_counter() - total_start) * 1000, 2),
+                    "results": len(unique_sources[:k]),
+                }
+                st.session_state.pop("retrieval_comparison", None)
+
                 synthesis_prompt = f"""Based on the following sub-answers, provide a comprehensive answer to the original question.
+
+Language rule:
+- Respond in {language_name}.
+- If the question is not Chinese, do not use Chinese.
 
 ORIGINAL QUESTION: {query}
 
@@ -589,6 +821,7 @@ SUB-ANSWERS:
 
 Provide a clear, comprehensive answer:"""
                 synthesis = self.llm_service.generate(synthesis_prompt)
+                synthesis = self._enforce_answer_language(synthesis, query)
                 return synthesis, unique_sources[:k]
 
             return "", unique_sources[:k]
@@ -620,17 +853,27 @@ Provide a clear, comprehensive answer:"""
         if self.vector_service is None or not self.vector_service.is_initialized:
             raise VectorStoreError("Please upload documents first")
 
+        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_file_types = st.session_state.get("active_file_type_filters", [])
+        metadata_filters: Dict[str, Any] = {}
+        if selected_sources:
+            metadata_filters["source_files"] = selected_sources
+        if selected_file_types:
+            metadata_filters["file_types"] = selected_file_types
+
         if use_multi_hop:
             logger.info("Using multi-hop reasoning for complex query")
-            answer, sources = self._multi_hop_reasoning(rewritten, k)
+            answer, sources = self._multi_hop_reasoning(rewritten, k, metadata_filters)
             if not answer:
                 # Fallback to normal retrieval
-                answer, sources = self._normal_retrieval(rewritten, k)
+                answer, sources = self._normal_retrieval(rewritten, k, metadata_filters)
         else:
-            answer, sources = self._normal_retrieval(rewritten, k)
+            answer, sources = self._normal_retrieval(rewritten, k, metadata_filters)
 
         if not answer:
-            return "I don't have enough information to answer this question.", [], 0.0, "Very low confidence", ""
+            return "I don't have enough information to answer this question.", [], 0.0, "Độ tin cậy rất thấp", ""
+
+        answer = self._enforce_answer_language(answer, query)
 
         # Step 4: Self-evaluation
         context = "\n".join([s.content[:500] for s in sources[:3]])
@@ -644,19 +887,49 @@ Provide a clear, comprehensive answer:"""
 
         return answer, sources, confidence, confidence_level, eval_justification
 
-    def _normal_retrieval(self, query: str, k: int = 3) -> Tuple[str, List[Document]]:
+    def _normal_retrieval(
+        self,
+        query: str,
+        k: int = 3,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, List[Document]]:
         """Standard single-hop retrieval and generation."""
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         use_rerank = bool(st.session_state.get("use_rerank", False))
         retrieval_k = int(st.session_state.get("retrieval_k", k))
 
         if hasattr(self.vector_service, "search"):
-            relevant_docs, _ = self.vector_service.search(
-                query=query, k=retrieval_k, use_hybrid=use_hybrid, rerank=use_rerank,
+            relevant_docs, retrieval_stats = self.vector_service.search(
+                query=query,
+                k=retrieval_k,
+                metadata_filters=metadata_filters,
+                use_hybrid=use_hybrid,
+                rerank=use_rerank,
                 fetch_k=max(retrieval_k * 4, 20),
             )
+
+            st.session_state.last_retrieval_stats = retrieval_stats
+            comparison = self._build_retrieval_comparison(
+                query=query,
+                k=retrieval_k,
+                metadata_filters=metadata_filters or {},
+                use_hybrid=use_hybrid,
+                use_rerank=use_rerank,
+                retrieved_docs=relevant_docs,
+                retrieval_stats=retrieval_stats,
+            )
+            if comparison:
+                st.session_state.retrieval_comparison = comparison
+            else:
+                st.session_state.pop("retrieval_comparison", None)
         else:
             relevant_docs = self.vector_service.similarity_search(query, k=retrieval_k)
+            st.session_state.last_retrieval_stats = {
+                "use_hybrid": False,
+                "rerank": False,
+                "results": len(relevant_docs),
+            }
+            st.session_state.pop("retrieval_comparison", None)
 
         if not relevant_docs:
             return "", []

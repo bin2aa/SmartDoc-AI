@@ -10,12 +10,14 @@ class QueryRequest(BaseModel):
     query: str = Field(..., description="User's question")
     k: int = Field(3, description="Number of documents to retrieve", ge=1, le=10)
     temperature: float = Field(0.7, description="LLM temperature", ge=0.0, le=1.0)
+    use_self_rag: bool = Field(False, description="Enable Self-RAG pipeline")
     
     class Config:
         example = {
             "query": "What is the main topic?",
             "k": 3,
-            "temperature": 0.7
+            "temperature": 0.7,
+            "use_self_rag": False,
         }
 
 
@@ -23,11 +25,13 @@ class BatchQueryRequest(BaseModel):
     """Request model for batch queries."""
     queries: List[str] = Field(..., description="List of questions")
     k: int = Field(3, description="Number of documents to retrieve", ge=1, le=10)
+    use_self_rag: bool = Field(False, description="Enable Self-RAG pipeline for all queries")
     
     class Config:
         example = {
             "queries": ["What is AI?", "How does it work?"],
-            "k": 3
+            "k": 3,
+            "use_self_rag": False,
         }
 
 
@@ -44,6 +48,8 @@ class QueryResponse(BaseModel):
     sources: List[SourceDocument] = Field(..., description="Source documents used")
     timestamp: str = Field(..., description="Response timestamp")
     confidence: float = Field(0.8, description="Confidence score", ge=0.0, le=1.0)
+    confidence_level: Optional[str] = Field(None, description="Confidence level label")
+    self_evaluation: Optional[str] = Field(None, description="Self-evaluation justification")
     
     class Config:
         example = {
@@ -51,7 +57,9 @@ class QueryResponse(BaseModel):
             "answer": "AI is artificial intelligence...",
             "sources": [],
             "timestamp": "2024-01-15T10:30:00",
-            "confidence": 0.85
+            "confidence": 0.85,
+            "confidence_level": "Moderate confidence",
+            "self_evaluation": "Answer is grounded in context.",
         }
 
 

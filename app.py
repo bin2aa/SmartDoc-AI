@@ -163,6 +163,9 @@ class SessionStateManager:
         if 'use_rerank' not in st.session_state:
             st.session_state.use_rerank = saved_settings.get('use_rerank', False)
 
+        if 'use_self_rag' not in st.session_state:
+            st.session_state.use_self_rag = saved_settings.get('use_self_rag', False)
+
         if 'retrieval_k' not in st.session_state:
             st.session_state.retrieval_k = saved_settings.get('retrieval_k', 3)
 
