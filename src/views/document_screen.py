@@ -35,11 +35,24 @@ class DocumentScreen:
         
         Once uploaded, your documents will be processed and made available for questions in the Chat tab.
         """)
+
+        # --- THÊM TÙY CHỌN BẬT/TẮT OCR Ở ĐÂY ---
+        st.markdown("### Processing Options")
+        enable_ocr = st.checkbox(
+            "Enable OCR (Read text from Images / Scanned PDFs)", 
+            help="Check this to process .png, .jpg, or scanned .pdf files. Note: Processing will take longer."
+        )
+        
+        # Mở rộng danh sách đuôi file được phép trên UI nếu bật OCR
+        display_extensions = [ext.replace('.', '') for ext in ALLOWED_EXTENSIONS]
+        if enable_ocr:
+            display_extensions.extend(['png', 'jpg', 'jpeg'])
+        # ----------------------------------------
         
         # File uploader
         uploaded_files = self.components.file_uploader(
             label="Choose one or multiple documents",
-            accepted_types=[ext.replace('.', '') for ext in ALLOWED_EXTENSIONS],
+            accepted_types=display_extensions, # Cập nhật truyền list đuôi file linh hoạt
             accept_multiple_files=True,
         )
 
@@ -50,7 +63,8 @@ class DocumentScreen:
             with col2:
                 if st.button("Process Documents", use_container_width=True, type="primary"):
                     with self.components.loading_spinner("Processing documents..."):
-                        result = self.controller.upload_and_process_many(uploaded_files)
+                        # --- TRUYỀN BIẾN OCR XUỐNG CONTROLLER ---
+                        result = self.controller.upload_and_process_many(uploaded_files, use_ocr=enable_ocr)
                         if result.get("success_count", 0) > 0:
                             st.balloons()
 

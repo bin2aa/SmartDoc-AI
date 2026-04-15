@@ -37,22 +37,23 @@ class DocumentController:
         
         logger.info("DocumentController initialized")
     
-    def upload_and_process(self, uploaded_file) -> bool:
+    def upload_and_process(self, uploaded_file, use_ocr: bool = False) -> bool:
         """
         Upload and process document.
         
         Args:
             uploaded_file: Streamlit uploaded file object
+            use_ocr: Bật chế độ quét ảnh (OCR)
             
         Returns:
             True if successful, False otherwise
         """
         try:
             # Validate file
-            if not self._validate_file(uploaded_file):
+            if not self._validate_file(uploaded_file, use_ocr=use_ocr):
                 return False
             
-            result = self.upload_and_process_many([uploaded_file])
+            result = self.upload_and_process_many([uploaded_file], use_ocr=use_ocr)
             return result["success_count"] == 1
                 
         except Exception as e:
@@ -60,7 +61,7 @@ class DocumentController:
             st.error(f"Unexpected error: {str(e)}")
             return False
 
-    def upload_and_process_many(self, uploaded_files: List[Any]) -> Dict[str, Any]:
+    def upload_and_process_many(self, uploaded_files: List[Any], use_ocr: bool = False) -> Dict[str, Any]:
         """Upload and process multiple documents in one action."""
         if not uploaded_files:
             return {"success_count": 0, "failed": []}
@@ -75,7 +76,7 @@ class DocumentController:
 
         for uploaded_file in uploaded_files:
             try:
-                if not self._validate_file(uploaded_file):
+                if not self._validate_file(uploaded_file, use_ocr=use_ocr):
                     failed.append(uploaded_file.name)
                     continue
 
@@ -83,7 +84,8 @@ class DocumentController:
                 logger.info("Saved file to %s", file_path)
 
                 try:
-                    documents = self.document_service.load_document(file_path)
+                    # Truyền cờ use_ocr xuống Service
+                    documents = self.document_service.load_document(file_path, use_ocr=use_ocr)
                     logger.info("Loaded %s chunks from %s", len(documents), uploaded_file.name)
                 except DocumentLoadError as load_error:
                     failed.append(uploaded_file.name)
@@ -92,12 +94,14 @@ class DocumentController:
 
                 self.vector_service.add_documents(documents)
 
+                # Lưu trạng thái is_ocr vào session để hỗ trợ reload khi benchmark
                 loaded_docs.append(
                     {
                         "name": uploaded_file.name,
                         "path": file_path,
                         "file_type": Path(uploaded_file.name).suffix.lower(),
                         "chunks": len(documents),
+                        "is_ocr": use_ocr,
                     }
                 )
                 success_count += 1
@@ -123,12 +127,13 @@ class DocumentController:
             "total": len(uploaded_files),
         }
     
-    def _validate_file(self, uploaded_file) -> bool:
+    def _validate_file(self, uploaded_file, use_ocr: bool = False) -> bool:
         """
         Validate uploaded file.
         
         Args:
             uploaded_file: Streamlit uploaded file object
+            use_ocr: Mở rộng các đuôi file ảnh nếu bật OCR
             
         Returns:
             True if valid, False otherwise
@@ -139,8 +144,15 @@ class DocumentController:
         
         # Check file extension
         file_ext = Path(uploaded_file.name).suffix.lower()
-        if file_ext not in ALLOWED_EXTENSIONS:
-            st.error(f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+        
+        # Mở rộng list extension khi bật OCR
+        valid_extensions = list(ALLOWED_EXTENSIONS)
+        if use_ocr:
+            valid_extensions.extend(['.png', '.jpg', '.jpeg'])
+            
+        if file_ext not in valid_extensions:
+            unique_exts = list(set(valid_extensions))
+            st.error(f"Invalid file type. Allowed: {', '.join(unique_exts)}")
             return False
         
         # Check file size
@@ -225,9 +237,14 @@ class DocumentController:
 
                 for doc_meta in loaded_documents:
                     doc_path = doc_meta.get("path")
+                    # Lấy cờ OCR từ session để đọc lại file chính xác
+                    is_ocr = doc_meta.get("is_ocr", False)
+                    
                     if not doc_path:
                         continue
-                    chunks = self.document_service.load_document(doc_path)
+                        
+                    # Truyền is_ocr vào hàm load
+                    chunks = self.document_service.load_document(doc_path, use_ocr=is_ocr)
                     total_chunks += len(chunks)
                     for chunk in chunks:
                         content = chunk.content.lower()

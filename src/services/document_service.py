@@ -10,6 +10,9 @@ from src.utils.logger import setup_logger
 from src.utils.exceptions import DocumentLoadError
 from src.utils.constants import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 
+# Import hàm OCR
+from src.utils.ocr_utils import extract_text_with_ocr
+
 logger = setup_logger(__name__)
 
 
@@ -92,12 +95,13 @@ class DocumentService:
         )
         logger.info(f"DocumentService initialized (chunk_size={chunk_size}, overlap={chunk_overlap})")
     
-    def load_document(self, file_path: str) -> List[Document]:
+    def load_document(self, file_path: str, use_ocr: bool = False) -> List[Document]:
         """
         Load a document from file.
         
         Args:
             file_path: Path to the document file
+            use_ocr: Bật chế độ quét ảnh (OCR) cho file PDF và file ảnh trực tiếp
             
         Returns:
             List of Document objects (already chunked)
@@ -106,20 +110,40 @@ class DocumentService:
             DocumentLoadError: If loading fails
         """
         try:
-            logger.info(f"Loading document: {file_path}")
+            logger.info(f"Loading document: {file_path} | use_ocr: {use_ocr}")
             
-            # Create appropriate loader
-            loader = DocumentLoaderFactory.create_loader(file_path)
+            extension = Path(file_path).suffix.lower()
+            lc_docs = []
             
-            # Load document
-            lc_docs = loader.load()
+            # --- KHAI BÁO CÁC ĐUÔI ẢNH ĐƯỢC PHÉP CHẠY OCR ---
+            image_extensions = ['.png', '.jpg', '.jpeg']
+            
+            # ĐIỀU KIỆN CHẠY OCR: 
+            # (Là file PDF VÀ người dùng có bật OCR) HOẶC (Bản chất nó là file ảnh)
+            is_image_file = extension in image_extensions
+            is_pdf_ocr = use_ocr and extension == '.pdf'
+            
+            if is_pdf_ocr or is_image_file:
+                logger.info(f"Bắt đầu trích xuất OCR cho file: {file_path}")
+                extracted_text = extract_text_with_ocr(file_path)
+                
+                if not extracted_text.strip():
+                    raise ValueError("Không nhận diện được chữ nào trong tài liệu này.")
+                    
+                # Bọc text vào LCDocument để tương thích hoàn toàn với logic cũ
+                lc_docs = [LCDocument(page_content=extracted_text, metadata={"source": file_path})]
+            else:
+                # Logic cũ bình thường: Create appropriate loader
+                loader = DocumentLoaderFactory.create_loader(file_path)
+                lc_docs = loader.load()
+                
             logger.info(f"Loaded {len(lc_docs)} pages/sections from document")
             
-            # Split into chunks
+            # Split into chunks (Logic cũ không đổi)
             chunks = self.text_splitter.split_documents(lc_docs)
             logger.info(f"Split into {len(chunks)} chunks")
             
-            # Convert to domain Document objects
+            # Convert to domain Document objects (Logic cũ không đổi)
             source_path = Path(file_path)
             upload_time = datetime.now().isoformat()
             documents = [
@@ -132,6 +156,7 @@ class DocumentService:
                         'file_type': source_path.suffix.lower(),
                         'uploaded_at': upload_time,
                         'chunk_index': idx,
+                        'is_ocr': True if (is_pdf_ocr or is_image_file) else False, # Đánh dấu flag data
                     }
                 )
                 for idx, chunk in enumerate(chunks)
