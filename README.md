@@ -35,8 +35,38 @@ ollama pull qwen2.5:3b
 ollama pull qwen2.5:7b
 
 ```
+**Bước 4: Cài đặt phần mềm hệ thống (Tesseract & Poppler)**
+```bash
+Tùy theo hệ điều hành bạn đang sử dụng, hãy thực hiện các bước cài đặt tương ứng dưới đây:
 
-**Bước 4: Khởi chạy ứng dụng**
++ Trên macOS (sử dụng Homebrew)
+Mở Terminal và chạy lệnh sau:
+brew install tesseract tesseract-lang poppler
+
++ Trên Linux (Ubuntu / Debian)
+Mở Terminal và thực hiện lần lượt các lệnh:
+sudo apt-get update
+sudo apt-get install tesseract-ocr tesseract-ocr-vie poppler-utils
+
++ Trên Windows 
+a. Cài đặt Tesseract OCR (Công cụ nhận dạng ký tự)
+•	Tải bộ cài đặt tại:
+https://github.com/UB-Mannheim/tesseract/wiki (chọn phiên bản 64-bit) 
+•	Trong quá trình cài đặt: 
+o	Tại mục Additional language data, bắt buộc chọn Vietnamese để hỗ trợ nhận dạng tiếng Việt. 
+•	Sau khi cài đặt, đường dẫn mặc định của Tesseract sẽ là: 
+C:\Program Files\Tesseract-OCR\tesseract.exe
+
+b. Cài đặt Poppler (Công cụ xử lý PDF sang ảnh)
+•	Tải bản Poppler dành cho Windows tại:
+Release poppler-windows 
+•	Sau khi tải về: 
+1.	Giải nén file .zip 
+2.	Đổi tên thư mục vừa giải nén thành poppler 
+3.	Sao chép thư mục này vào ổ C, ví dụ: 
+C:\poppler
+```
+**Bước 5: Khởi chạy ứng dụng**
 ```bash
 pip install streamlit
 streamlit run app.py
