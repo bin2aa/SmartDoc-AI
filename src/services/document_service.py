@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from datetime import datetime
-from typing import List
+from typing import List, Dict, Any
 from langchain_community.document_loaders import PDFPlumberLoader, Docx2txtLoader, TextLoader
 from langchain_core.documents import Document as LCDocument
 from src.models.document_model import Document
@@ -94,52 +94,77 @@ class DocumentService:
     
     def load_document(self, file_path: str) -> List[Document]:
         """
-        Load a document from file.
-        
+        Load a document from file, extract rich metadata, and split into chunks.
+
+        **Enriched metadata fields:**
+        - `source`: Absolute path to the file
+        - `source_file`: File name only (without path)
+        - `file_type`: File extension (e.g., `.pdf`)
+        - `uploaded_at`: ISO timestamp when the file was loaded
+        - `chunk_index`: Index of the chunk within the document (0-based)
+        - `chunk_start`: Character offset where the chunk begins
+        - `chunk_end`: Character offset where the chunk ends
+        - `file_size_bytes`: Size of the original file in bytes
+        - `total_chunks`: Total number of chunks created from this document
+        - `page_count`: Number of pages/sections in the document (PDF only)
+        - `title`: Document title derived from filename
+
         Args:
             file_path: Path to the document file
-            
+
         Returns:
-            List of Document objects (already chunked)
-            
+            List of Document objects (one per chunk)
+
         Raises:
             DocumentLoadError: If loading fails
         """
         try:
             logger.info(f"Loading document: {file_path}")
-            
-            # Create appropriate loader
-            loader = DocumentLoaderFactory.create_loader(file_path)
-            
-            # Load document
-            lc_docs = loader.load()
-            logger.info(f"Loaded {len(lc_docs)} pages/sections from document")
-            
-            # Split into chunks
-            chunks = self.text_splitter.split_documents(lc_docs)
-            logger.info(f"Split into {len(chunks)} chunks")
-            
-            # Convert to domain Document objects
+
             source_path = Path(file_path)
             upload_time = datetime.now().isoformat()
+            file_size_bytes = source_path.stat().st_size
+            file_name = source_path.name
+            file_ext = source_path.suffix.lower()
+
+            # Load document content
+            loader = DocumentLoaderFactory.create_loader(file_path)
+            lc_docs = loader.load()
+            num_pages = len(lc_docs)
+
+            # Split into chunks
+            chunks = self.text_splitter.split_documents(lc_docs)
+            total_chunks = len(chunks)
+            logger.info(f"Split into {total_chunks} chunks")
+
+            # Derive a readable title from the filename
+            title = file_name.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
+
+            # Build enriched document chunks
             documents = [
                 Document(
                     content=chunk.page_content,
                     metadata={
                         **chunk.metadata,
-                        'source': file_path,
-                        'source_file': source_path.name,
-                        'file_type': source_path.suffix.lower(),
-                        'uploaded_at': upload_time,
-                        'chunk_index': idx,
+                        "source": file_path,
+                        "source_file": file_name,
+                        "file_type": file_ext,
+                        "uploaded_at": upload_time,
+                        "chunk_index": idx,
+                        "file_size_bytes": file_size_bytes,
+                        "file_size_mb": round(file_size_bytes / (1024 * 1024), 2),
+                        "title": title,
+                        "page_count": num_pages,
+                        "total_chunks": total_chunks,
                     }
                 )
                 for idx, chunk in enumerate(chunks)
             ]
-            
-            logger.info(f"Successfully processed {file_path}: {len(documents)} chunks")
+
+            logger.info(f"Successfully processed {file_path}: {len(documents)} chunks, "
+                        f"{num_pages} pages, {file_size_bytes} bytes")
             return documents
-            
+
         except DocumentLoadError:
             raise
         except FileNotFoundError:

@@ -91,12 +91,20 @@ class DocumentController:
 
                 self.vector_service.add_documents(documents)
 
+                # Enrich loaded_documents metadata for display and filtering
+                first_chunk_meta = documents[0].metadata
+                last_chunk_meta = documents[-1].metadata
                 loaded_docs.append(
                     {
                         "name": uploaded_file.name,
                         "path": file_path,
                         "file_type": Path(uploaded_file.name).suffix.lower(),
                         "chunks": len(documents),
+                        "file_size_bytes": first_chunk_meta.get("file_size_bytes", 0),
+                        "file_size_mb": first_chunk_meta.get("file_size_mb", 0.0),
+                        "uploaded_at": first_chunk_meta.get("uploaded_at", ""),
+                        "page_count": first_chunk_meta.get("page_count", 0),
+                        "title": first_chunk_meta.get("title", uploaded_file.name),
                     }
                 )
                 success_count += 1

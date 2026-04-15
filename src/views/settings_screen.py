@@ -2,6 +2,7 @@
 
 import streamlit as st
 from src.controllers.document_controller import DocumentController
+from src.controllers.chat_controller import ChatController
 from src.views.components import UIComponents
 from src.utils.logger import setup_logger
 from src.utils.constants import *
@@ -12,18 +13,24 @@ logger = setup_logger(__name__)
 class SettingsScreen:
     """
     Settings configuration screen.
-    
+
     Allows users to configure RAG parameters.
     """
-    
-    def __init__(self, document_controller: DocumentController):
+
+    def __init__(
+        self,
+        document_controller: DocumentController,
+        chat_controller: ChatController = None,
+    ):
         """
         Initialize settings screen.
-        
+
         Args:
             document_controller: Document controller instance
+            chat_controller: Chat controller instance (for retrieval benchmark)
         """
         self.document_controller = document_controller
+        self.chat_controller = chat_controller
         self.components = UIComponents()
     
     def render(self):
@@ -149,6 +156,110 @@ class SettingsScreen:
             "Enable hybrid search to combine semantic and keyword retrieval. "
             "Enable re-ranking to improve relevance at the cost of higher latency."
         )
+
+        # === Retrieval Benchmark UI ===
+        if self.chat_controller is not None:
+            st.markdown("##### 📊 Retrieval Strategy Benchmark")
+            st.markdown(
+                "So sanh 3 chien luong: **Vector (Semantic)**, **BM25 (Keyword)**, "
+                "**Hybrid (Ensemble)**. Dùng 3 proxy metrics: "
+                "**Recall@K** (do chính xác), **Speed** (thời gian ms), "
+                "**Coverage** (số document duy nhất trả về)."
+            )
+
+            bench_col1, bench_col2 = st.columns([3, 1])
+            with bench_col1:
+                bench_query = st.text_input(
+                    "Benchmark query",
+                    value=st.session_state.get("retrieval_bench_query", ""),
+                    placeholder="Nhap cau hoi de so sanh cac chien luong retrieval...",
+                    help="Dùng một câu hỏi đại diện để so sánh 3 chiến lược.",
+                )
+            with bench_col2:
+                bench_k = st.selectbox(
+                    "Top-K",
+                    options=[3, 5, 8, 10],
+                    index=[3, 5, 8, 10].index(st.session_state.get("retrieval_bench_k", 5))
+                    if st.session_state.get("retrieval_bench_k", 5) in [3, 5, 8, 10]
+                    else 1,
+                )
+
+            st.session_state.retrieval_bench_query = bench_query
+            st.session_state.retrieval_bench_k = bench_k
+
+            if st.button("🚀 Run Retrieval Benchmark", type="primary"):
+                if not bench_query.strip():
+                    st.warning("Vui long nhap cau hoi benchmark.")
+                elif not st.session_state.get("vector_store_initialized", False):
+                    st.warning("Vector store trong. Vui long upload tai lieu truoc.")
+                else:
+                    with st.spinner("Dang chay benchmark retrieval..."):
+                        results = self.chat_controller.benchmark_retrieval(
+                            query=bench_query,
+                            k=bench_k,
+                        )
+
+                    if "error" in results:
+                        st.error(results["error"])
+                    else:
+                        strategies = results.get("strategies", {})
+
+                        # Bảng so sánh
+                        comparison_data = []
+                        for strat, data in strategies.items():
+                            row = {
+                                "Strategy": data["label"],
+                                "Recall@K": f"{data['recall_at_k']:.2%}",
+                                "Speed (ms)": f"{data['time_ms']:.1f}",
+                                "Sources found": data["unique_sources"],
+                                "Docs retrieved": data["docs_retrieved"],
+                            }
+                            comparison_data.append(row)
+
+                        st.markdown("**📋 Comparison Table**")
+                        st.dataframe(comparison_data, use_container_width=True, hide_index=True)
+
+                        # Highlight chiến lược tốt nhất
+                        best = results.get("best", {})
+                        st.markdown("**🏆 Best Strategy by Metric:**")
+                        best_cols = st.columns(3)
+                        metric_labels = [
+                            ("recall", "Recall@K", "📈"),
+                            ("speed", "Speed", "⚡"),
+                            ("coverage", "Coverage", "📚"),
+                        ]
+                        for idx, (key, label, icon) in enumerate(metric_labels):
+                            with best_cols[idx]:
+                                winner = best.get(key, "N/A")
+                                winner_label = strategies.get(winner, {}).get("label", winner)
+                                st.metric(
+                                    f"{icon} {label}",
+                                    winner_label,
+                                    delta=(
+                                        f"Recall: {strategies[winner]['recall_at_k']:.2%}"
+                                        if key == "recall" else
+                                        f"{strategies[winner]['time_ms']:.1f}ms"
+                                        if key == "speed" else
+                                        f"{strategies[winner]['unique_sources']} sources"
+                                    )
+                                )
+
+                        # Chi tiết top-3 documents của mỗi chiến lược
+                        with st.expander("📄 Chi tiet top documents moi chien luong"):
+                            for strat, data in strategies.items():
+                                st.markdown(f"**{data['label']}** (Recall@K = {data['recall_at_k']:.2%})")
+                                if data.get("top_docs"):
+                                    for i, doc in enumerate(data["top_docs"], 1):
+                                        src = doc["source"]
+                                        pg = doc["page"]
+                                        pg_label = f", page {pg}" if pg else ""
+                                        st.markdown(
+                                            f"  {i}. `[{src}{pg_label}]` — "
+                                            f"{doc['preview']}"
+                                        )
+                                else:
+                                    st.caption("  Khong co document nao.")
+                                st.markdown("")
     
     def _render_llm_settings(self):
         """Render LLM configuration settings."""

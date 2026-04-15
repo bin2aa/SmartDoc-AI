@@ -243,7 +243,7 @@ def main():
         doc_screen.render()
     
     elif page == "⚙️ Settings":
-        settings_screen = SettingsScreen(document_controller)
+        settings_screen = SettingsScreen(document_controller, chat_controller)
         settings_screen.render()
 
 

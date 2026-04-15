@@ -84,37 +84,80 @@ class ChatScreen:
     
     def _render_sources(self, sources: List[Document], msg_idx: int):
         """
-        Render source citations.
-        
+        Render source citations with rich document metadata.
+
+        Hiển thị thông tin chi tiết về document nguồn:
+        - Tên file + icon theo loại file
+        - Số trang
+        - Chunk index
+        - Kích thước file
+        - Ngày upload
+        - Đoạn preview có highlight từ khóa
+
         Args:
             sources: List of source documents
             msg_idx: Message index for unique key generation
         """
-        with st.expander("📚 View Sources"):
+        with st.expander("📚 Nguồn tài liệu"):
             for src_idx, source in enumerate(sources, 1):
+                file_type = source.metadata.get("file_type", "").upper().replace(".", "")
                 source_file = source.metadata.get("source_file") or source.source_file
-                open_link = f"data/uploads/{source_file}" if source_file else ""
+                page = source.metadata.get("page")
+                chunk_idx = source.metadata.get("chunk_index", 0)
+                file_size_mb = source.metadata.get("file_size_mb", 0)
+                uploaded_at = source.metadata.get("uploaded_at", "")
+                title = source.metadata.get("title", source_file)
                 is_used = bool(source.metadata.get("used_in_answer", False))
-                st.markdown(f"**Source {src_idx}:** {source.get_citation()}")
-                if open_link:
-                    st.markdown(f"[Open source file]({open_link})")
+                rerank_score = source.metadata.get("rerank_score")
 
-                overlap = source.metadata.get("used_term_overlap", 0)
-                if is_used:
-                    st.caption(f"✅ Highlighted as used context (term overlap: {overlap})")
-                else:
-                    st.caption("ℹ️ Retrieved context")
+                # Icon and color by file type
+                icon_map = {".PDF": "📕", ".DOCX": "📘", ".TXT": "📄"}
+                color_map = {".PDF": "#e53935", ".DOCX": "#1565c0", ".TXT": "#558b2f"}
+                icon = icon_map.get(file_type, "📄")
+                color = color_map.get(file_type, "#9e9e9e")
 
-                preview = source.content[:300] + "..." if len(source.content) > 300 else source.content
+                # Page info
+                page_info = f", trang {page}" if page is not None else ""
+                chunk_info = f" (chunk {chunk_idx + 1})"
+
+                # Rerank badge
+                rerank_badge = ""
+                if rerank_score is not None:
+                    rerank_badge = f" | 🎯 relevance = {rerank_score:.3f}"
+
+                st.markdown(f"""
+                <div style="
+                    border-left: 4px solid {color};
+                    padding: 8px 12px;
+                    margin-bottom: 8px;
+                    border-radius: 4px;
+                    background: {'#fff8e1' if is_used else '#f5f5f5'};
+                ">
+                    <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                        <span style="font-size:1.1em;">{icon}</span>
+                        <strong>{title}</strong>
+                        <span style="font-size:0.8em; color:#666;">{file_type}</span>
+                        {"<span style='background:#4caf50;color:white;font-size:0.7em;padding:1px 5px;border-radius:3px;margin-left:4px;'>✅ Dùng trong câu trả lời</span>" if is_used else ""}
+                    </div>
+                    <div style="font-size:0.8em; color:#555;">
+                        <span>📑 Nguồn: `{source_file}`{page_info}{chunk_info}{rerank_badge}</span>
+                    </div>
+                    <div style="font-size:0.78em; color:#888; margin-top:2px;">
+                        💾 {file_size_mb:.2f} MB | ⏱ {uploaded_at[:10]}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                preview = source.content[:300].replace("\n", " ") + "..."
                 if is_used:
                     preview = f"<mark>{preview}</mark>"
 
                 st.text_area(
-                    f"Context {src_idx}",
+                    f"Noi dung {src_idx}",
                     value=source.content,
-                    height=100,
+                    height=80,
                     key=f"source_msg{msg_idx}_src{src_idx}",
-                    disabled=True
+                    disabled=True,
                 )
                 st.markdown(preview, unsafe_allow_html=True)
     
