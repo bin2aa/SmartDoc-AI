@@ -154,7 +154,7 @@ class ChatController:
         query: str,
         k: int = 3,
         status_container=None,
-    ) -> Tuple[Generator[str, None, None], List[Document]]:
+    ) -> Tuple[Generator[str, None, None], List[Document], str]:
         """
         Process user query and return a streaming response generator.
 
@@ -167,7 +167,7 @@ class ChatController:
             status_container: Optional ``st.status`` container for step-by-step UI updates
 
         Returns:
-            Tuple of (stream_generator, source_documents)
+            Tuple of (stream_generator, source_documents, rewritten_query)
 
         Raises:
             ValueError: If query is empty
@@ -273,7 +273,7 @@ class ChatController:
             def _no_info_stream():
                 yield "I don't have enough information to answer this question."
 
-            return _no_info_stream(), []
+            return _no_info_stream(), [], rewritten_query
 
         # ── Step 4: Build context & prompt ────────────────────────────
         context = "\n\n".join(
@@ -295,7 +295,7 @@ class ChatController:
         _status_step("[llm]", f"Đang gọi LLM (chuẩn bị mất {elapsed:.0f}ms)...")
 
         stream_gen = self.llm_service.generate_stream(prompt)
-        return stream_gen, relevant_docs
+        return stream_gen, relevant_docs, rewritten_query
 
     @staticmethod
     def _doc_identity(doc: Document) -> str:
@@ -490,28 +490,55 @@ ANSWER:"""
         return "\n".join(lines)
 
     def _rewrite_query(self, query: str) -> str:
-        """Rewrite short follow-up queries using previous user message context."""
+        """Rewrite follow-up queries using LLM to create a standalone question."""
         chat_history = self._get_active_history()
         if not chat_history or len(chat_history) == 0:
             return query
 
+        # Heuristic check for potential follow-up
         stripped = query.strip()
         lowered = stripped.lower()
-        followup_markers = ["nó", "cái đó", "điều đó", "thế còn", "it", "that", "those", "they", "them"]
-        is_followup = len(stripped.split()) <= 8 or any(marker in lowered for marker in followup_markers)
+        followup_markers = ["nó", "cái đó", "điều đó", "thế còn", "it", "that", "those", "they", "them", "họ", "chúng"]
+        is_followup = len(stripped.split()) <= 10 or any(marker in lowered for marker in followup_markers)
 
         if not is_followup:
             return stripped
 
-        recent_user_questions = [msg.content for msg in chat_history.get_recent(8) if msg.role == "user"]
+        # Build conversation context for rewriting
+        recent_messages = chat_history.get_recent(n=6)
+        history_lines = []
+        for msg in recent_messages:
+            role = "User" if msg.role == "user" else "Assistant"
+            history_lines.append(f"{role}: {msg.content}")
+        
+        history_text = "\n".join(history_lines)
+
+        rewrite_prompt = f"""Given the following conversation history and a follow-up question, rephrase the follow-up question to be a STANDALONE question that can be understood without the conversation history.
+Maintain the original language of the follow-up question.
+
+CONVERSATION HISTORY:
+{history_text}
+
+FOLLOW-UP QUESTION: {query}
+
+STANDALONE QUESTION:"""
+
+        try:
+            rewritten = self.llm_service.generate(rewrite_prompt).strip()
+            # Basic validation: if LLM returns something too short or fails, fallback to original + hint
+            if len(rewritten) > 5:
+                logger.info(f"LLM rewrote query: '{query}' -> '{rewritten}'")
+                return rewritten
+        except Exception as e:
+            logger.warning(f"LLM query rewriting failed: {e}")
+
+        # Fallback to simple concatenation if LLM fails
+        recent_user_questions = [msg.content for msg in recent_messages if msg.role == "user"]
         previous_question = recent_user_questions[-1] if recent_user_questions else ""
-
-        if not previous_question:
-            return stripped
-
-        rewritten = f"{stripped} (follow-up to previous question: {previous_question})"
-        logger.info("Rewrote follow-up query for conversational retrieval")
-        return rewritten
+        if previous_question:
+            return f"{stripped} (về chủ đề: {previous_question})"
+        
+        return stripped
 
     @staticmethod
     def _detect_target_language(query: str) -> str:
@@ -834,12 +861,12 @@ Provide a clear, comprehensive answer:"""
         self,
         query: str,
         k: int = 3,
-    ) -> Tuple[str, List[Document], float, str, str]:
+    ) -> Tuple[str, List[Document], float, str, str, str]:
         """
         Process query with full Self-RAG pipeline.
 
         Returns:
-            Tuple of (answer, sources, confidence_score, confidence_level, self_eval_justification)
+            Tuple of (answer, sources, confidence_score, confidence_level, self_eval_justification, rewritten_query)
         """
         # Step 1: Query rewriting
         rewritten = self._rewrite_query(query)
@@ -871,7 +898,7 @@ Provide a clear, comprehensive answer:"""
             answer, sources = self._normal_retrieval(rewritten, k, metadata_filters)
 
         if not answer:
-            return "I don't have enough information to answer this question.", [], 0.0, "Độ tin cậy rất thấp", ""
+            return "I don't have enough information to answer this question.", [], 0.0, "Độ tin cậy rất thấp", "", rewritten
 
         answer = self._enforce_answer_language(answer, query)
 
@@ -885,7 +912,7 @@ Provide a clear, comprehensive answer:"""
 
         logger.info(f"Self-RAG complete: confidence={confidence}%, eval={eval_score}/5")
 
-        return answer, sources, confidence, confidence_level, eval_justification
+        return answer, sources, confidence, confidence_level, eval_justification, rewritten
 
     def _normal_retrieval(
         self,

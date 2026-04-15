@@ -109,9 +109,12 @@ class ChatScreen:
             if message.role == "assistant" and message.metadata and message.metadata.get('used_self_rag'):
                 self._render_self_rag_metadata(message.metadata)
             
-            # Display sources if available
-            if message.role == "assistant" and message.metadata and message.metadata.get('source_citations'):
-                self._render_source_citations(message.metadata['source_citations'], msg_idx)
+            if message.role == "assistant" and message.metadata:
+                rewritten = message.metadata.get('rewritten_query')
+                if message.metadata.get('source_details'):
+                    self._render_source_details(message.metadata['source_details'], msg_idx, rewritten_query=rewritten)
+                elif message.metadata.get('source_citations'):
+                    self._render_source_citations(message.metadata['source_citations'], msg_idx)
 
     @staticmethod
     def _render_self_rag_metadata(metadata: dict):
@@ -136,6 +139,49 @@ class ChatScreen:
         with st.expander("Xem nguồn tham khảo"):
             for src_idx, citation in enumerate(citations, 1):
                 st.markdown(f"**Nguồn {src_idx}:** {citation}")
+
+    def _render_source_details(self, source_details: List[dict], msg_idx: int, rewritten_query: Optional[str] = None):
+        """
+        Render source citations with detailed info from dictionary.
+        
+        Args:
+            source_details: List of source detail dictionaries
+            msg_idx: Message index for unique key generation
+            rewritten_query: Optional rewritten query to display
+        """
+        with st.expander("Xem chi tiết nguồn tham khảo"):
+            if rewritten_query:
+                st.info(f"**Câu hỏi đã được tối ưu:** {rewritten_query}")
+                st.divider()
+
+            for src_idx, src in enumerate(source_details, 1):
+                citation = src.get("citation", "[Unknown source]")
+                source_file = src.get("source_file")
+                content = src.get("content", "")
+                is_used = src.get("used_in_answer", False)
+                overlap = src.get("used_term_overlap", 0)
+                
+                st.markdown(f"**Nguồn {src_idx}:** {citation}")
+                
+                if source_file:
+                    open_link = f"data/uploads/{source_file}"
+                    st.markdown(f"[Mở file nguồn]({open_link})")
+                
+                if is_used:
+                    st.caption(f"Được sử dụng trong câu trả lời (term overlap: {overlap})")
+                    # Highlight preview
+                    preview = content[:300] + "..." if len(content) > 300 else content
+                    st.markdown(f"<mark style='background-color: #ffff0033;'>{preview}</mark>", unsafe_allow_html=True)
+                else:
+                    st.caption("Ngữ cảnh đã truy xuất (không được dùng trực tiếp)")
+
+                st.text_area(
+                    f"Nội dung đầy đủ (Nguồn {src_idx})",
+                    value=content,
+                    height=150,
+                    key=f"source_msg{msg_idx}_src{src_idx}",
+                    disabled=True
+                )
     
     def _render_sources(self, sources: List[Document], msg_idx: int):
         """
@@ -203,7 +249,7 @@ class ChatScreen:
                         status.write(f"[search] **Phân tích câu hỏi:** `{prompt}`")
                         status.write("[rewrite] Query rewriting + Self-RAG")
                         status.write("[retrieve] Retrieval / multi-hop reasoning")
-                        response_text, sources, confidence_score, confidence_level, self_eval_justification = (
+                        response_text, sources, confidence_score, confidence_level, self_eval_justification, rewritten_query = (
                             self.controller.process_query_with_self_rag(prompt, k=retrieval_k)
                         )
                         status.write("[eval] Self-evaluation + confidence scoring")
@@ -223,7 +269,7 @@ class ChatScreen:
                 else:
                     # Step 1: Retrieval with status indicator
                     with st.status("Đang xử lý câu hỏi...", expanded=True) as status:
-                        stream_gen, sources = self.controller.process_query_stream(
+                        stream_gen, sources, rewritten_query = self.controller.process_query_stream(
                             prompt,
                             status_container=status,
                         )
@@ -243,22 +289,27 @@ class ChatScreen:
 
                 formatted_answer = self.controller.format_reply_for_streamlit(response_text, sources)
 
-                # Step 4: Convert sources to serializable citation strings
-                source_citations = []
+                # Step 4: Convert sources to serializable detailed info
+                source_details = []
                 if sources:
                     for src in sources:
                         try:
-                            source_citations.append(src.get_citation())
+                            source_details.append({
+                                "content": src.content,
+                                "citation": src.get_citation(),
+                                "source_file": src.metadata.get("source_file") or src.source_file,
+                                "page": src.page_number,
+                                "used_in_answer": src.metadata.get("used_in_answer", False),
+                                "used_term_overlap": src.metadata.get("used_term_overlap", 0)
+                            })
                         except Exception as e:
-                            logger.warning(f"Failed to get citation for source: {e}")
-                            source_citations.append("[Unknown source]")
+                            logger.warning(f"Failed to get details for source: {e}")
 
                 # Show sources immediately after answer for both modes
-                if source_citations:
-                    self._render_source_citations(source_citations, msg_idx=-1)
+                if source_details:
+                    self._render_source_details(source_details, msg_idx=-1, rewritten_query=rewritten_query)
 
                 # Step 5: NOW add both messages to history (after display is complete).
-                # Store source_citations (list of strings) instead of Document objects.
                 history = st.session_state.get('chat_history')
                 if history is None:
                     logger.error("chat_history is None before adding messages — creating new one")
@@ -267,8 +318,9 @@ class ChatScreen:
                 
                 history.add_message("user", prompt)
                 assistant_metadata = {
-                    'source_citations': source_citations,
+                    'source_details': source_details,
                     'used_self_rag': use_self_rag,
+                    'rewritten_query': rewritten_query if rewritten_query != prompt else None
                 }
                 if use_self_rag:
                     assistant_metadata['confidence_score'] = confidence_score
