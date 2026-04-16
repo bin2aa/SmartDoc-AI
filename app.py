@@ -321,9 +321,8 @@ def main():
     if page == "documents":
         doc_screen = DocumentScreen(document_controller)
         doc_screen.render()
-
     elif page == "settings":
-        settings_screen = SettingsScreen(document_controller)
+        settings_screen = SettingsScreen(document_controller, chat_controller)
         settings_screen.render()
 
     else:

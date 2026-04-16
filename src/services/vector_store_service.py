@@ -1,7 +1,7 @@
 """Vector store service for SmartDoc AI using FAISS."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 import os
 import re
 import time
@@ -68,6 +68,7 @@ class AbstractVectorStoreService(ABC):
         k: int = 3,
         metadata_filters: Optional[Dict[str, Any]] = None,
         use_hybrid: bool = False,
+        use_bm25_only: bool = False,
         rerank: bool = False,
         fetch_k: int = 20,
     ) -> Tuple[List[Document], Dict[str, Any]]:
@@ -272,10 +273,29 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
         k: int = 3,
         metadata_filters: Optional[Dict[str, Any]] = None,
         use_hybrid: bool = False,
+        use_bm25_only: bool = False,
         rerank: bool = False,
         fetch_k: int = 20,
     ) -> Tuple[List[Document], Dict[str, Any]]:
-        """Advanced retrieval supporting hybrid search, filtering and reranking."""
+        """Advanced retrieval supporting hybrid search, filtering and reranking.
+
+        Retrieval strategies (mutually exclusive):
+        - Pure Vector: use_hybrid=False, use_bm25_only=False
+        - Pure BM25 (keyword only): use_bm25_only=True
+        - Hybrid (Vector + BM25 ensemble): use_hybrid=True
+
+        Args:
+            query: Search query string
+            k: Number of final documents to return
+            metadata_filters: Optional filters by source_file or file_type
+            use_hybrid: If True, combine vector and BM25 results
+            use_bm25_only: If True, return only BM25 results (for benchmark comparison)
+            rerank: If True, apply cross-encoder reranking
+            fetch_k: Number of candidates to fetch before filtering/reranking
+
+        Returns:
+            Tuple of (retrieved_documents, retrieval_statistics_dict)
+        """
         if self.vector_store is None:
             if self.embeddings is None:
                 error_message = self._init_error or "Embedding model is not initialized"
@@ -306,7 +326,15 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
             merged_candidates = vector_candidates
             bm25_candidates: List[Document] = []
 
-            if use_hybrid:
+            if use_bm25_only:
+                # Pure BM25 strategy: skip vector search entirely
+                bm25_start = time.perf_counter()
+                bm25_candidates = self._bm25_search(query=query, k=max(k, fetch_k))
+                stats["bm25_time_ms"] = round((time.perf_counter() - bm25_start) * 1000, 2)
+                stats["bm25_candidates"] = len(bm25_candidates)
+                merged_candidates = bm25_candidates
+                stats["overlap_count"] = 0
+            elif use_hybrid:
                 bm25_start = time.perf_counter()
                 bm25_candidates = self._bm25_search(query=query, k=max(k, fetch_k))
                 stats["bm25_time_ms"] = round((time.perf_counter() - bm25_start) * 1000, 2)
@@ -333,8 +361,9 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
             )
 
             logger.info(
-                "Retrieval done | hybrid=%s rerank=%s results=%s vector_ms=%.2f bm25_ms=%.2f rerank_ms=%.2f",
+                "Retrieval done | hybrid=%s bm25_only=%s rerank=%s results=%s vector_ms=%.2f bm25_ms=%.2f rerank_ms=%.2f",
                 use_hybrid,
+                use_bm25_only,
                 rerank,
                 len(final_docs),
                 stats["vector_time_ms"],
@@ -504,3 +533,183 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
     def is_initialized(self) -> bool:
         """Check if vector store is initialized."""
         return self.vector_store is not None
+
+
+# ---------------------------------------------------------------------------
+# Retrieval Benchmark
+# ---------------------------------------------------------------------------
+
+class RetrievalBenchmark:
+    """
+    So sánh 3 chiến lược retrieval:
+    1. Pure Vector (semantic search)
+    2. Pure BM25 (keyword search)
+    3. Hybrid (Vector + BM25 ensemble)
+
+    Dùng 3 proxy metrics:
+    - Recall@K: Tỷ lệ chunk chứa từ khóa query được recall về
+    - Speed (ms): Thời gian phản hồi trung bình
+    - Coverage: Số chunk duy nhất được trả về
+    """
+
+    def __init__(self, vector_service: "FAISSVectorStoreService"):
+        self.vector_service = vector_service
+
+    def _compute_recall_at_k(
+        self,
+        query: str,
+        k: int,
+        strategy: str,
+    ) -> Tuple[float, List[Document], Dict[str, float]]:
+        """
+        Tính Recall@K cho một chiến lược retrieval.
+
+        Recall@K = (số chunk trong top-K chứa từ khóa query) / (tổng số chunk chứa từ khóa)
+
+        Args:
+            query: Câu hỏi truy vấn
+            k: Số document lấy về
+            strategy: 'vector' | 'bm25' | 'hybrid'
+
+        Returns:
+            Tuple: (recall_score, retrieved_docs, timing_stats)
+        """
+        all_docs = self.vector_service._all_lc_documents()
+        if not all_docs:
+            return 0.0, [], {"time_ms": 0.0}
+
+        stop_words = {
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+            "have", "has", "had", "do", "does", "did", "will", "would", "could",
+            "should", "may", "might", "can", "of", "at", "by", "for", "with",
+            "about", "against", "between", "into", "through", "during", "before",
+            "after", "above", "below", "to", "from", "up", "down", "in", "out",
+            "on", "off", "over", "under", "again", "further", "then", "once",
+            "here", "there", "when", "where", "why", "how", "all", "each",
+            "few", "more", "most", "other", "some", "such", "no", "nor", "not",
+            "only", "own", "same", "so", "than", "too", "very", "s", "t",
+            "just", "don", "now", "và", "của", "là", "có", "trong", "được",
+            "cho", "với", "này", "đó", "những", "một", "các", "tôi", "bạn",
+            "anh", "chị", "họ", "nó", "đi", "về", "từ", "ra", "vào", "lên",
+        }
+        query_tokens = {
+            t.lower() for t in re.findall(r"\w+", query)
+            if t.lower() not in stop_words and len(t) > 1
+        }
+
+        ground_truth_keys = set()
+        for idx, doc in enumerate(all_docs):
+            content_lower = doc.page_content.lower()
+            if any(token in content_lower for token in query_tokens):
+                key = hashlib.md5(doc.page_content.encode()).hexdigest()
+                ground_truth_keys.add(key)
+
+        total_relevant = len(ground_truth_keys)
+
+        start = time.perf_counter()
+        if strategy == "vector":
+            docs, stats = self.vector_service.search(
+                query=query, k=k, use_hybrid=False, use_bm25_only=False, rerank=False
+            )
+        elif strategy == "bm25":
+            docs, stats = self.vector_service.search(
+                query=query, k=k, use_hybrid=False, use_bm25_only=True, rerank=False
+            )
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            stats = {**stats, "time_ms": elapsed_ms}
+        elif strategy == "hybrid":
+            docs, stats = self.vector_service.search(
+                query=query, k=k, use_hybrid=True, use_bm25_only=False, rerank=False
+            )
+        else:
+            docs, stats = [], {}
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        if not docs:
+            return 0.0, [], {"time_ms": elapsed_ms}
+
+        retrieved_relevant = 0
+        for doc in docs:
+            key = hashlib.md5(doc.content.encode()).hexdigest()
+            if key in ground_truth_keys:
+                retrieved_relevant += 1
+
+        recall = retrieved_relevant / total_relevant if total_relevant > 0 else 0.0
+        timing = dict(stats)
+        timing["time_ms"] = round(elapsed_ms, 2)
+        return recall, docs, timing
+
+    def run(
+        self,
+        query: str,
+        k: int = 5,
+        show_progress: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Chạy benchmark đầy đủ cho 3 chiến lược.
+
+        Args:
+            query: Câu hỏi test
+            k: Số document lấy về
+            show_progress: Callback hiển thị tiến trình (tuỳ chọn)
+
+        Returns:
+            Dict chứa kết quả của cả 3 chiến lược và bảng so sánh
+        """
+        if self.vector_service.vector_store is None:
+            return {"error": "Vector store is empty. Please upload documents first."}
+
+        strategies = ["vector", "bm25", "hybrid"]
+        results: Dict[str, Dict[str, Any]] = {}
+        summary_labels = {
+            "vector": "Vector (Semantic)",
+            "bm25": "BM25 (Keyword)",
+            "hybrid": "Hybrid (Ensemble)",
+        }
+
+        for strat in strategies:
+            if show_progress:
+                show_progress(f"Testing: {summary_labels.get(strat, strat)}...")
+            recall, docs, timing = self._compute_recall_at_k(query, k, strat)
+            results[strat] = {
+                "strategy": strat,
+                "label": summary_labels.get(strat, strat),
+                "recall_at_k": round(recall, 4),
+                "docs_retrieved": len(docs),
+                "unique_sources": len({d.metadata.get("source_file", "") for d in docs}),
+                "time_ms": timing.get("time_ms", 0.0),
+                "vector_time_ms": timing.get("vector_time_ms", 0.0),
+                "bm25_time_ms": timing.get("bm25_time_ms", 0.0),
+                "top_docs": [
+                    {
+                        "source": d.metadata.get("source_file", "unknown"),
+                        "page": d.metadata.get("page"),
+                        "preview": d.content[:150].replace("\n", " ") + "...",
+                    }
+                    for d in docs[:3]
+                ],
+            }
+
+        best_by_recall = max(results, key=lambda s: results[s]["recall_at_k"])
+        best_by_speed = min(results, key=lambda s: results[s]["time_ms"])
+        best_by_coverage = max(results, key=lambda s: results[s]["unique_sources"])
+
+        for strat, res in results.items():
+            res["is_best_recall"] = strat == best_by_recall
+            res["is_best_speed"] = strat == best_by_speed
+            res["is_best_coverage"] = strat == best_by_coverage
+
+        return {
+            "query": query,
+            "k": k,
+            "query_tokens": list({
+                t for t in re.findall(r"\w+", query.lower())
+                if len(t) > 1
+            }),
+            "strategies": results,
+            "best": {
+                "recall": best_by_recall,
+                "speed": best_by_speed,
+                "coverage": best_by_coverage,
+            },
+        }

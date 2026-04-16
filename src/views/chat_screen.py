@@ -16,45 +16,45 @@ logger = setup_logger(__name__)
 class ChatScreen:
     """
     Chat interface screen following MVC pattern.
-    
+
     Displays chat history and handles user interactions.
     """
-    
+
     def __init__(self, controller: ChatController):
         """
         Initialize chat screen.
-        
+
         Args:
             controller: Chat controller instance
         """
         self.controller = controller
         self.components = UIComponents()
-    
+
     def render(self):
         """Render the chat screen."""
         st.markdown(f"## {icon('chat')} Chat với tài liệu", unsafe_allow_html=True)
-        
+
         # Check if vector store is ready
         if not st.session_state.get('vector_store_initialized', False):
             self._render_empty_state()
             return
-        
+
         # Ensure chat_history exists (recovery mechanism)
         self._ensure_history()
-        
+
         # Render chat interface
         self._render_chat_history()
         self._render_chat_input()
-        
+
         self._render_retrieval_metrics()
-    
+
     def _ensure_history(self):
         """Ensure chat_history exists in session_state, recover from disk if needed."""
         history = st.session_state.get('chat_history')
         if history is not None and len(history) > 0:
             logger.debug(f"Chat history OK: {len(history)} messages")
             return
-        
+
         # History is empty or missing — try to recover from disk
         if history is None:
             logger.warning("chat_history is None in session_state — recovering from disk")
@@ -71,32 +71,32 @@ class ChatScreen:
             if saved and len(saved) > 0:
                 logger.warning(f"Memory history is empty but disk has {len(saved)} messages — recovering")
                 st.session_state.chat_history = saved
-    
+
     def _render_empty_state(self):
         """Show empty state when no documents loaded."""
         self.components.info_alert("Vui lòng tải tài liệu lên trước trong tab Documents")
-        
+
         st.markdown(f"""
         ### {icon('waving_hand')} Chào mừng đến SmartDoc AI!
-        
+
         Để bắt đầu:
         1. Nhấn **Documents** ở sidebar bên trái
         2. Tải lên file PDF, DOCX, hoặc TXT
         3. Quay lại đây để đặt câu hỏi về tài liệu
-        
+
         SmartDoc AI sử dụng RAG (Retrieval-Augmented Generation) để trả lời câu hỏi dựa trên tài liệu của bạn.
         """, unsafe_allow_html=True)
-    
+
     def _render_chat_history(self):
         """Display all chat history messages."""
         history = st.session_state.get('chat_history')
-        
+
         logger.debug(f"_render_chat_history: history={type(history).__name__}, len={len(history) if history else 'None'}")
-        
+
         if not history or len(history) == 0:
             self.components.info_alert("Bắt đầu cuộc trò chuyện bằng cách đặt câu hỏi bên dưới")
             return
-        
+
         # Display ALL messages from history
         for msg_idx, message in enumerate(history.messages):
             avatar = "user" if message.role == "user" else "assistant"
@@ -108,7 +108,7 @@ class ChatScreen:
 
             if message.role == "assistant" and message.metadata and message.metadata.get('used_self_rag'):
                 self._render_self_rag_metadata(message.metadata)
-            
+
             if message.role == "assistant" and message.metadata:
                 rewritten = message.metadata.get('rewritten_query')
                 if message.metadata.get('source_details'):
@@ -127,11 +127,11 @@ class ChatScreen:
             st.caption(f"Do tin cay Self-RAG: {confidence_score}% ({confidence_level})")
         if self_eval:
             st.caption(f"Tu danh gia: {self_eval}")
-    
+
     def _render_source_citations(self, citations: List[str], msg_idx: int):
         """
         Render source citations from serialized citation strings.
-        
+
         Args:
             citations: List of citation strings
             msg_idx: Message index for unique key generation
@@ -143,7 +143,7 @@ class ChatScreen:
     def _render_source_details(self, source_details: List[dict], msg_idx: int, rewritten_query: Optional[str] = None):
         """
         Render source citations with detailed info from dictionary.
-        
+
         Args:
             source_details: List of source detail dictionaries
             msg_idx: Message index for unique key generation
@@ -160,13 +160,13 @@ class ChatScreen:
                 content = src.get("content", "")
                 is_used = src.get("used_in_answer", False)
                 overlap = src.get("used_term_overlap", 0)
-                
+
                 st.markdown(f"**Nguồn {src_idx}:** {citation}")
-                
+
                 if source_file:
                     open_link = f"data/uploads/{source_file}"
                     st.markdown(f"[Mở file nguồn]({open_link})")
-                
+
                 if is_used:
                     st.caption(f"Được sử dụng trong câu trả lời (term overlap: {overlap})")
                     # Highlight preview
@@ -182,48 +182,91 @@ class ChatScreen:
                     key=f"source_msg{msg_idx}_src{src_idx}",
                     disabled=True
                 )
-    
+
     def _render_sources(self, sources: List[Document], msg_idx: int):
         """
-        Render source citations with full document info.
-        
+        Render source citations with rich document metadata.
+
+        Hiển thị thông tin chi tiết về document nguồn:
+        - Tên file + icon theo loại file
+        - Số trang
+        - Chunk index
+        - Kích thước file
+        - Ngày upload
+        - Đoạn preview có highlight từ khóa
+
         Args:
             sources: List of source documents
             msg_idx: Message index for unique key generation
         """
-        with st.expander("Xem nguồn tham khảo"):
+        with st.expander("📚 Nguồn tài liệu"):
             for src_idx, source in enumerate(sources, 1):
+                file_type = source.metadata.get("file_type", "").upper().replace(".", "")
                 source_file = source.metadata.get("source_file") or source.source_file
-                open_link = f"data/uploads/{source_file}" if source_file else ""
+                page = source.metadata.get("page")
+                chunk_idx = source.metadata.get("chunk_index", 0)
+                file_size_mb = source.metadata.get("file_size_mb", 0)
+                uploaded_at = source.metadata.get("uploaded_at", "")
+                title = source.metadata.get("title", source_file)
                 is_used = bool(source.metadata.get("used_in_answer", False))
-                st.markdown(f"**Nguồn {src_idx}:** {source.get_citation()}")
-                if open_link:
-                    st.markdown(f"[Mở file nguồn]({open_link})")
+                rerank_score = source.metadata.get("rerank_score")
 
-                overlap = source.metadata.get("used_term_overlap", 0)
-                if is_used:
-                    st.caption(f"Được sử dụng trong câu trả lời (term overlap: {overlap})")
-                else:
-                    st.caption("Ngữ cảnh đã truy xuất")
+                # Icon and color by file type
+                icon_map = {".PDF": "📕", ".DOCX": "📘", ".TXT": "📄"}
+                color_map = {".PDF": "#e53935", ".DOCX": "#1565c0", ".TXT": "#558b2f"}
+                icon = icon_map.get(file_type, "📄")
+                color = color_map.get(file_type, "#9e9e9e")
 
-                preview = source.content[:300] + "..." if len(source.content) > 300 else source.content
+                # Page info
+                page_info = f", trang {page}" if page is not None else ""
+                chunk_info = f" (chunk {chunk_idx + 1})"
+
+                # Rerank badge
+                rerank_badge = ""
+                if rerank_score is not None:
+                    rerank_badge = f" | 🎯 relevance = {rerank_score:.3f}"
+
+                st.markdown(f"""
+                <div style="
+                    border-left: 4px solid {color};
+                    padding: 8px 12px;
+                    margin-bottom: 8px;
+                    border-radius: 4px;
+                    background: {'#fff8e1' if is_used else '#f5f5f5'};
+                ">
+                    <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                        <span style="font-size:1.1em;">{icon}</span>
+                        <strong>{title}</strong>
+                        <span style="font-size:0.8em; color:#666;">{file_type}</span>
+                        {"<span style='background:#4caf50;color:white;font-size:0.7em;padding:1px 5px;border-radius:3px;margin-left:4px;'>✅ Dùng trong câu trả lời</span>" if is_used else ""}
+                    </div>
+                    <div style="font-size:0.8em; color:#555;">
+                        <span>📑 Nguồn: `{source_file}`{page_info}{chunk_info}{rerank_badge}</span>
+                    </div>
+                    <div style="font-size:0.78em; color:#888; margin-top:2px;">
+                        💾 {file_size_mb:.2f} MB | ⏱ {uploaded_at[:10]}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                preview = source.content[:300].replace("\n", " ") + "..."
                 if is_used:
                     preview = f"<mark>{preview}</mark>"
 
                 st.text_area(
-                    f"Ngữ cảnh {src_idx}",
+                    f"Noi dung {src_idx}",
                     value=source.content,
-                    height=100,
+                    height=80,
                     key=f"source_msg{msg_idx}_src{src_idx}",
-                    disabled=True
+                    disabled=True,
                 )
                 st.markdown(preview, unsafe_allow_html=True)
-    
+
     def _render_chat_input(self):
         """Render chat input box with streaming response and step-by-step status.
-        
+
         Key design: Messages are ONLY added to chat_history AFTER the full
-        response is complete. Sources are stored as citation strings (not 
+        response is complete. Sources are stored as citation strings (not
         Document objects) to avoid serialization issues.
         """
         if prompt := st.chat_input("Đặt câu hỏi về tài liệu của bạn..."):
@@ -233,7 +276,7 @@ class ChatScreen:
             st.session_state.is_processing_query = True
             # Avoid rendering retrieval metrics in the same render cycle as loading/status.
             st.session_state.skip_retrieval_metrics_once = True
-            
+
             # Display user message bubble directly (not from history)
             with st.chat_message("user", avatar="user"):
                 st.markdown(prompt)
@@ -315,7 +358,7 @@ class ChatScreen:
                     logger.error("chat_history is None before adding messages — creating new one")
                     history = ChatHistory()
                     st.session_state.chat_history = history
-                
+
                 history.add_message("user", prompt)
                 assistant_metadata = {
                     'source_details': source_details,
@@ -375,7 +418,7 @@ class ChatScreen:
             return
         for token in text.split(" "):
             yield token + " "
-    
+
     def _save_user_message(self, prompt: str):
         """Save user message to history even when processing fails."""
         try:
@@ -388,7 +431,7 @@ class ChatScreen:
             logger.info(f"Saved user message to history (total: {len(history)})")
         except Exception as e:
             logger.error(f"Failed to save user message: {e}")
-    
+
     def _render_retrieval_metrics(self):
         """Show retrieval strategy metrics for hybrid/pure-vector comparison."""
         if st.session_state.get("is_processing_query", False):

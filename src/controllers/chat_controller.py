@@ -5,7 +5,8 @@ import re
 import time
 import streamlit as st
 from src.services.llm_service import AbstractLLMService, OllamaLLMService
-from src.services.vector_store_service import AbstractVectorStoreService
+from src.services.vector_store_service import AbstractVectorStoreService, RetrievalBenchmark
+from src.services.n8n_service import N8NWebhookService
 from src.models.chat_model import ChatHistory
 from src.models.document_model import Document
 from src.utils.logger import setup_logger
@@ -970,4 +971,44 @@ Provide a clear, comprehensive answer:"""
         prompt = self._build_prompt(context, query, conversation_context)
         response = self.llm_service.generate(prompt)
         return response, relevant_docs
+
+
+        return self.n8n_service.send_chat_event(
+            question=question,
+            formatted_answer=formatted_answer,
+            raw_answer=raw_answer,
+            sources=sources,
+        )
+
+    def benchmark_retrieval(self, query: str, k: int = 5) -> Dict[str, Any]:
+        """
+        So sánh performance giữa pure vector, pure BM25 và hybrid search.
+
+        Benchmark chạy trên vector_service hiện tại và trả về:
+        - Recall@K cho mỗi chiến lược
+        - Thời gian phản hồi (ms)
+        - Số document duy nhất được trả về (coverage)
+        - Chiến lược tốt nhất theo từng metric
+
+        Args:
+            query: Câu hỏi dùng để test retrieval
+            k: Số document lấy về (mặc định 5)
+
+        Returns:
+            Dict chứa kết quả benchmark của cả 3 chiến lược
+
+        Raises:
+            VectorStoreError: Nếu vector store chưa được khởi tạo
+        """
+        if self.vector_service is None or not self.vector_service.is_initialized:
+            raise VectorStoreError("Vector store chua duoc khoi tao. Vui long upload tai lieu truoc.")
+
+        logger.info(f"Running retrieval benchmark for query: {query[:50]}...")
+        benchmark = RetrievalBenchmark(self.vector_service)
+        results = benchmark.run(query=query, k=k)
+        logger.info(
+            f"Benchmark complete | best recall={results.get('best', {}).get('recall')} "
+            f"best speed={results.get('best', {}).get('speed')}"
+        )
+        return results
 
