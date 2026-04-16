@@ -1,7 +1,7 @@
 """Chat screen for SmartDoc AI."""
 
 import streamlit as st
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from src.controllers.chat_controller import ChatController
 from src.views.components import UIComponents, icon
 from src.models.document_model import Document
@@ -9,6 +9,7 @@ from src.models.chat_model import ChatHistory
 from src.utils.logger import setup_logger
 from src.utils.exceptions import LLMConnectionError
 from src.services.persistence_service import save_chat_history, load_chat_history
+from src.utils.constants import RAG_TYPE_STANDARD, RAG_TYPE_CORAG
 
 logger = setup_logger(__name__)
 
@@ -286,6 +287,22 @@ class ChatScreen:
                 confidence_score = None
                 confidence_level = None
                 self_eval_justification = None
+                rag_type = st.session_state.get("rag_type", RAG_TYPE_STANDARD)
+                compare = bool(st.session_state.get("compare_rag", False))
+
+                # Step 1: Retrieval with status indicator
+                rag_label = "Standard RAG" if rag_type == RAG_TYPE_STANDARD else "Chain-of-RAG"
+                with st.status(f"Đang xử lý câu hỏi ({rag_label})...", expanded=True) as status:
+                    stream_gen, sources, metrics = self.controller.process_query_with_strategy(
+                        prompt,
+                        status_container=status,
+                    )
+                    # Mark retrieval complete
+                    status.update(
+                        label=f"Đã tìm thấy tài liệu liên quan! ({rag_label})",
+                        state="complete",
+                        expanded=False,
+                    )
 
                 if use_self_rag:
                     with st.status("Đang xử lý câu hỏi...", expanded=True) as status:
@@ -380,6 +397,10 @@ class ChatScreen:
                 else:
                     logger.error("FAILED to save chat history to disk!")
 
+                # Step 7: Show RAG comparison if enabled
+                if compare:
+                    self._render_rag_comparison(response_text)
+
             except LLMConnectionError as e:
                 logger.error(f"LLM error while processing query: {e}")
                 # Still save the user message to history even if LLM fails
@@ -431,6 +452,90 @@ class ChatScreen:
             logger.info(f"Saved user message to history (total: {len(history)})")
         except Exception as e:
             logger.error(f"Failed to save user message: {e}")
+    
+    def _render_rag_comparison(self, primary_answer: str) -> None:
+        """
+        Render side-by-side comparison of Standard RAG vs Chain-of-RAG.
+
+        Reads comparison results from ``st.session_state.rag_comparison_result``
+        which was populated by ``ChatController.process_query_with_strategy``.
+
+        Args:
+            primary_answer: The answer from the primary (selected) strategy
+        """
+        comparison = st.session_state.get("rag_comparison_result")
+        if not comparison:
+            return
+
+        primary_type = comparison["primary_type"]
+        other_type = comparison["other_type"]
+        other_answer = comparison.get("other_answer", "")
+        primary_metrics: Dict[str, Any] = comparison.get("primary_metrics", {})
+        other_metrics: Dict[str, Any] = comparison.get("other_metrics", {})
+
+        rag_labels = {
+            RAG_TYPE_STANDARD: "Standard RAG",
+            RAG_TYPE_CORAG: "Chain-of-RAG",
+        }
+
+        primary_label = rag_labels.get(primary_type, primary_type)
+        other_label = rag_labels.get(other_type, other_type)
+
+        with st.expander(f"[compare] {primary_label} vs {other_label}", expanded=True):
+            # ── Metrics Table ────────────────────────────────────
+            col_metrics = {
+                "Metric": [
+                    "Retrieval Steps",
+                    "Docs Retrieved",
+                    "Retrieval Time",
+                    "Generation Time",
+                    "Total Time",
+                    "Answer Length",
+                ],
+                primary_label: [
+                    str(primary_metrics.get("retrieval_steps", "-")),
+                    str(primary_metrics.get("total_docs_retrieved", "-")),
+                    f"{primary_metrics.get('retrieval_time_ms', 0):.0f}ms",
+                    f"{primary_metrics.get('generation_time_ms', 0):.0f}ms",
+                    f"{primary_metrics.get('total_time_ms', 0):.0f}ms",
+                    f"{len(primary_answer)} chars",
+                ],
+                other_label: [
+                    str(other_metrics.get("retrieval_steps", "-")),
+                    str(other_metrics.get("total_docs_retrieved", "-")),
+                    f"{other_metrics.get('retrieval_time_ms', 0):.0f}ms",
+                    f"{other_metrics.get('generation_time_ms', 0):.0f}ms",
+                    f"{other_metrics.get('total_time_ms', 0):.0f}ms",
+                    f"{other_metrics.get('answer_length', len(other_answer))} chars",
+                ],
+            }
+
+            import pandas as pd
+            df = pd.DataFrame(col_metrics)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            # ── Sub-questions (if CoRAG) ─────────────────────────
+            for label, m in [(primary_label, primary_metrics), (other_label, other_metrics)]:
+                subs = m.get("sub_questions", [])
+                if subs and len(subs) > 1:
+                    st.markdown(f"**{label} sub-questions:**")
+                    for i, sq in enumerate(subs, 1):
+                        st.markdown(f"  {i}. `{sq}`")
+
+            st.markdown("---")
+
+            # ── Answer Comparison ─────────────────────────────────
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(f"**{primary_label} Answer:**")
+                st.markdown(primary_answer[:500] + ("..." if len(primary_answer) > 500 else ""))
+
+            with col_b:
+                st.markdown(f"**{other_label} Answer:**")
+                st.markdown(other_answer[:500] + ("..." if len(other_answer) > 500 else ""))
+
+        # Clear comparison after displaying
+        st.session_state.rag_comparison_result = None
 
     def _render_retrieval_metrics(self):
         """Show retrieval strategy metrics for hybrid/pure-vector comparison."""
@@ -509,3 +614,5 @@ class ChatScreen:
                 rows = result.get("rows", [])
                 if rows:
                     st.dataframe(rows, use_container_width=True)
+                st.markdown("**Hybrid vs Vector**")
+                st.write(comparison)

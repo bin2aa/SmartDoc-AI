@@ -6,11 +6,21 @@ import time
 import streamlit as st
 from src.services.llm_service import AbstractLLMService, OllamaLLMService
 from src.services.vector_store_service import AbstractVectorStoreService, RetrievalBenchmark
+from src.services.rag_service import (
+    AbstractRAGStrategy,
+    StandardRAGStrategy,
+    ChainOfRAGStrategy,
+)
 from src.models.chat_model import ChatHistory
 from src.models.document_model import Document
 from src.utils.logger import setup_logger
 from src.utils.exceptions import LLMConnectionError, VectorStoreError
-from src.utils.constants import DEFAULT_STREAMLIT_REPLY_TEMPLATES, NO_INFO_MARKERS
+from src.utils.constants import (
+    DEFAULT_STREAMLIT_REPLY_TEMPLATES,
+    NO_INFO_MARKERS,
+    RAG_TYPE_STANDARD,
+    RAG_TYPE_CORAG,
+)
 
 logger = setup_logger(__name__)
 
@@ -914,12 +924,119 @@ Provide a clear, comprehensive answer:"""
 
         return answer, sources, confidence, confidence_level, eval_justification, rewritten
 
-    def _normal_retrieval(
+    # ── RAG Strategy Delegation ────────────────────────────────────
+
+    @staticmethod
+    def _get_strategy(rag_type: str) -> AbstractRAGStrategy:
+        """Return the appropriate RAG strategy instance.
+
+        Args:
+            rag_type: One of RAG_TYPE_STANDARD or RAG_TYPE_CORAG
+
+        Returns:
+            An instance of AbstractRAGStrategy
+        """
+        if rag_type == RAG_TYPE_CORAG:
+            return ChainOfRAGStrategy()
+        return StandardRAGStrategy()
+
+    def process_query_with_strategy(
         self,
         query: str,
         k: int = 3,
-        metadata_filters: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, List[Document]]:
+        status_container=None,
+    ) -> Tuple[Generator[str, None, None], List[Document], Dict[str, Any]]:
+        """
+        Process a query using the selected RAG strategy.
+
+        Reads ``rag_type`` and ``compare_rag`` from session state. When
+        comparison mode is enabled, both Standard and Chain-of-RAG are
+        executed sequentially and the comparison results are stored in
+        ``st.session_state.rag_comparison_result``.
+
+        Args:
+            query: User's question
+            k: Number of documents to retrieve per step
+            status_container: Optional ``st.status`` container
+
+        Returns:
+            Tuple of (stream_generator, source_documents, metrics)
+        """
+        rag_type = st.session_state.get("rag_type", RAG_TYPE_STANDARD)
+        compare = bool(st.session_state.get("compare_rag", False))
+        retrieval_k = int(st.session_state.get("retrieval_k", k))
+
+        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_file_types = st.session_state.get("active_file_type_filters", [])
+        metadata_filters: Dict[str, Any] = {}
+        if selected_sources:
+            metadata_filters["source_files"] = selected_sources
+        if selected_file_types:
+            metadata_filters["file_types"] = selected_file_types
+
+        conversation_context = self._conversation_context(max_turns=4)
+
+        # ── Check vector store ──────────────────────────────────
+        if self.vector_service is None or not self.vector_service.is_initialized:
+            raise VectorStoreError("Please upload documents first")
+
+        # ── Run primary strategy ────────────────────────────────
+        strategy = self._get_strategy(rag_type)
+        logger.info(f"Using RAG strategy: {rag_type}")
+
+        stream_gen, docs, metrics = strategy.process_query_stream(
+            query=query,
+            vector_service=self.vector_service,
+            llm_service=self.llm_service,
+            k=retrieval_k,
+            status_container=status_container,
+            metadata_filters=metadata_filters,
+            conversation_context=conversation_context,
+        )
+
+        # ── Comparison mode: run the other strategy ─────────────
+        if compare:
+            import time as _time
+            import copy
+
+            other_type = RAG_TYPE_STANDARD if rag_type == RAG_TYPE_CORAG else RAG_TYPE_CORAG
+            other_strategy = self._get_strategy(other_type)
+
+            logger.info(f"Comparison mode: also running {other_type}")
+
+            # Run the other strategy (non-streaming — collect full answer)
+            try:
+                other_stream, other_docs, other_metrics = other_strategy.process_query_stream(
+                    query=query,
+                    vector_service=self.vector_service,
+                    llm_service=self.llm_service,
+                    k=retrieval_k,
+                    status_container=None,  # Don't clutter UI
+                    metadata_filters=metadata_filters,
+                    conversation_context=conversation_context,
+                )
+
+                # Collect the full answer from the other strategy
+                other_answer = "".join(other_stream)
+                other_metrics["answer_length"] = len(other_answer)
+
+                st.session_state.rag_comparison_result = {
+                    "primary_type": rag_type,
+                    "primary_metrics": metrics,
+                    "primary_answer_pending": True,
+                    "other_type": other_type,
+                    "other_metrics": other_metrics,
+                    "other_answer": other_answer,
+                    "other_docs": other_docs,
+                }
+
+            except Exception as e:
+                logger.warning(f"Comparison strategy ({other_type}) failed: {e}")
+                st.session_state.rag_comparison_result = None
+
+        return stream_gen, docs, metrics
+
+    def _normal_retrieval(self, query: str, k: int = 3) -> Tuple[str, List[Document]]:
         """Standard single-hop retrieval and generation."""
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         use_rerank = bool(st.session_state.get("use_rerank", False))

@@ -61,6 +61,16 @@ NO_INFO_MARKERS = [
 ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.txt']
 MAX_FILE_SIZE_MB = 10
 
+# RAG Pipeline Types
+RAG_TYPE_STANDARD = "standard"
+RAG_TYPE_CORAG = "chain_of_rag"
+AVAILABLE_RAG_TYPES = [RAG_TYPE_STANDARD, RAG_TYPE_CORAG]
+DEFAULT_RAG_TYPE = RAG_TYPE_STANDARD
+
+# Chain-of-RAG Configuration
+CORAG_MAX_CHAIN_STEPS = 3
+CORAG_MIN_QUERY_WORDS = 6  # Below this, skip decomposition
+
 # UI Configuration
 PAGE_TITLE = "SmartDoc AI"
 PAGE_ICON = "📚"

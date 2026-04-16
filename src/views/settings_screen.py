@@ -7,6 +7,7 @@ from src.controllers.chat_controller import ChatController
 from src.utils.logger import setup_logger
 from src.utils.constants import *
 from src.services.persistence_service import save_settings
+from src.utils.constants import RAG_TYPE_STANDARD, RAG_TYPE_CORAG, AVAILABLE_RAG_TYPES
 
 logger = setup_logger(__name__)
 
@@ -126,10 +127,61 @@ class SettingsScreen:
                 st.warning("No benchmark result. Upload documents and provide a query first.")
 
     def _render_retrieval_settings(self):
-        """Render retrieval strategy options including hybrid and rerank."""
+        """Render retrieval strategy options including RAG type, hybrid, and rerank."""
         st.subheader("Retrieval Strategy")
 
-        col1, col2, col3, col4 = st.columns(4)
+        # ── RAG Pipeline Type ─────────────────────────────────────
+        rag_type_labels = {
+            RAG_TYPE_STANDARD: "Standard RAG",
+            RAG_TYPE_CORAG: "Chain-of-RAG (CoRAG)",
+        }
+        current_rag_type = st.session_state.get("rag_type", RAG_TYPE_STANDARD)
+        rag_type_options = list(rag_type_labels.keys())
+        rag_display_options = list(rag_type_labels.values())
+
+        selected_rag = st.selectbox(
+            "RAG Pipeline Type",
+            options=rag_type_options,
+            format_func=lambda x: rag_type_labels.get(x, x),
+            index=rag_type_options.index(current_rag_type) if current_rag_type in rag_type_options else 0,
+            help=(
+                "Standard RAG: single retrieval then generate. "
+                "Chain-of-RAG: decompose query into sub-questions, retrieve sequentially with refinement, then synthesize."
+            ),
+        )
+        st.session_state.rag_type = selected_rag
+
+        # ── Comparison Toggle ─────────────────────────────────────
+        st.session_state.compare_rag = st.toggle(
+            "Compare both RAG types side-by-side",
+            value=st.session_state.get("compare_rag", False),
+            help="Runs both Standard and Chain-of-RAG for each query so you can compare results and timing.",
+        )
+
+        # ── Description of selected mode ──────────────────────────
+        if selected_rag == RAG_TYPE_CORAG:
+            st.info(
+                "**Chain-of-RAG** will decompose complex queries into 2-3 sub-questions, "
+                "retrieve documents for each sequentially (refining based on previous context), "
+                "then synthesize a final answer. This improves quality for multi-faceted questions "
+                "but takes longer."
+            )
+        else:
+            st.info(
+                "**Standard RAG** retrieves documents in a single step, then generates an answer. "
+                "Fast and effective for straightforward questions."
+            )
+
+        if st.session_state.get("compare_rag", False):
+            st.warning(
+                "Comparison mode is ON. Both strategies will run for each query. "
+                "Expect ~2x latency."
+            )
+
+        st.markdown("---")
+
+        # ── Retrieval Options ─────────────────────────────────────
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.session_state.use_hybrid_search = st.toggle(
                 "Hybrid Search (Vector + BM25)",
@@ -395,6 +447,8 @@ class SettingsScreen:
             "use_rerank": st.session_state.get("use_rerank", False),
             "use_self_rag": st.session_state.get("use_self_rag", False),
             "retrieval_k": st.session_state.get("retrieval_k", 3),
+            "rag_type": st.session_state.get("rag_type", RAG_TYPE_STANDARD),
+            "compare_rag": st.session_state.get("compare_rag", False),
         }
         save_settings(settings)
         logger.info("Settings persisted to disk")
