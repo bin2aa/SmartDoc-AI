@@ -1,5 +1,6 @@
 venv
 data/uploads/
+data/persistence/
 models_cache/
 .DS_Store
 *.pyc

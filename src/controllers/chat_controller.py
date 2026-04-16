@@ -6,7 +6,6 @@ import time
 import streamlit as st
 from src.services.llm_service import AbstractLLMService, OllamaLLMService
 from src.services.vector_store_service import AbstractVectorStoreService, RetrievalBenchmark
-from src.services.n8n_service import N8NWebhookService
 from src.models.chat_model import ChatHistory
 from src.models.document_model import Document
 from src.utils.logger import setup_logger
@@ -971,14 +970,6 @@ Provide a clear, comprehensive answer:"""
         prompt = self._build_prompt(context, query, conversation_context)
         response = self.llm_service.generate(prompt)
         return response, relevant_docs
-
-
-        return self.n8n_service.send_chat_event(
-            question=question,
-            formatted_answer=formatted_answer,
-            raw_answer=raw_answer,
-            sources=sources,
-        )
 
     def benchmark_retrieval(self, query: str, k: int = 5) -> Dict[str, Any]:
         """

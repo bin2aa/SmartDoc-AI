@@ -269,7 +269,6 @@ class SettingsScreen:
                                 else:
                                     st.caption("  Khong co document nao.")
                                 st.markdown("")
->>>>>>> feature/8-implement-and-verify-78-in-assignment
     
     def _render_llm_settings(self):
         """Render LLM configuration settings."""
