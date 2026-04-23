@@ -215,10 +215,15 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
     def add_documents(self, documents: List[LCDocument]) -> None:
         """
         Add documents to vector store.
-        
+
+        Prepends a ``[File: <filename>]`` prefix to each chunk's
+        ``page_content`` before embedding so that vectors from different
+        files are separated in embedding space.  The original content is
+        preserved in metadata field ``original_content``.
+
         Args:
             documents: List of Document objects to add
-            
+
         Raises:
             VectorStoreError: If adding documents fails
         """
@@ -229,26 +234,35 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
         if self.embeddings is None:
             error_message = self._init_error or "Embedding model is not initialized"
             raise VectorStoreError(error_message)
-        
+
         try:
             logger.info(f"Adding {len(documents)} documents to vector store")
-            
-            # Convert to LangChain document format
-            lc_docs = [
-                LCDocument(page_content=doc.content, metadata=doc.metadata)
-                for doc in documents
-            ]
-            
+
+            # Convert to LangChain document format with filename prefix
+            # for better vector separation between different files.
+            lc_docs: List[LCDocument] = []
+            for doc in documents:
+                source_name = Path(doc.metadata.get("source", "")).name or "unknown"
+                prefixed_content = f"[File: {source_name}]\n{doc.content}"
+
+                enriched_metadata = {
+                    **doc.metadata,
+                    "original_content": doc.content,
+                }
+                lc_docs.append(
+                    LCDocument(page_content=prefixed_content, metadata=enriched_metadata)
+                )
+
             if self.vector_store is None:
                 self.vector_store = FAISS.from_documents(lc_docs, self.embeddings)
-                logger.info("Created new FAISS index")
+                logger.info("Created new FAISS index with filename-prefixed chunks")
             else:
                 self.vector_store.add_documents(lc_docs)
                 logger.info("Added documents to existing FAISS index")
 
             # BM25 needs to be rebuilt from all current docs.
             self._rebuild_bm25_retriever()
-                
+
         except Exception as e:
             logger.error(f"Failed to add documents: {e}")
             raise VectorStoreError(f"Failed to add documents: {str(e)}")
@@ -319,7 +333,9 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
 
         try:
             start = time.perf_counter()
-            vector_candidates = self._vector_search(query=query, k=max(k, fetch_k))
+            vector_candidates = self._vector_search(
+                query=query, k=max(k, fetch_k), metadata_filters=metadata_filters,
+            )
             stats["vector_time_ms"] = round((time.perf_counter() - start) * 1000, 2)
             stats["vector_candidates"] = len(vector_candidates)
 
@@ -375,14 +391,92 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
             logger.error("Advanced search failed: %s", e)
             raise VectorStoreError(f"Search failed: {str(e)}")
 
-    def _vector_search(self, query: str, k: int) -> List[Document]:
-        """Run pure vector search and return domain documents."""
+    @staticmethod
+    def _build_faiss_filter(
+        metadata_filters: Optional[Dict[str, Any]],
+    ) -> Optional[Callable[[Dict[str, Any]], bool]]:
+        """Build a FAISS-compatible filter function from metadata_filters.
+
+        FAISS ``similarity_search`` accepts a ``filter`` callable that
+        receives a doc's metadata dict and returns True if the doc should
+        be included.  This is **pre-retrieval** filtering — only matching
+        vectors are searched, avoiding the problem where non-matching
+        docs fill up the k slots.
+
+        Args:
+            metadata_filters: Dict with optional ``source_files`` and ``file_types`` lists
+
+        Returns:
+            A filter callable or None if no filters are needed
+        """
+        if not metadata_filters:
+            return None
+
+        source_files = set(metadata_filters.get("source_files", []))
+        file_types = set(metadata_filters.get("file_types", []))
+
+        if not source_files and not file_types:
+            return None
+
+        def _faiss_filter(metadata: Dict[str, Any]) -> bool:
+            source = str(metadata.get("source", ""))
+            source_name = Path(source).name
+            file_type = str(metadata.get("file_type", Path(source).suffix.lower()))
+
+            if source_files and source_name not in source_files:
+                return False
+            if file_types and file_type not in file_types:
+                return False
+            return True
+
+        return _faiss_filter
+
+    def _vector_search(
+        self,
+        query: str,
+        k: int,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Document]:
+        """Run pure vector search with optional pre-retrieval metadata filtering.
+
+        Uses FAISS's ``filter`` parameter to restrict the search space
+        BEFORE similarity computation, ensuring that only chunks from
+        the requested files are considered.
+
+        Args:
+            query: Search query string
+            k: Number of results to return
+            metadata_filters: Optional filters to apply during search
+
+        Returns:
+            List of domain Document objects with original (non-prefixed) content
+        """
+        faiss_filter = self._build_faiss_filter(metadata_filters)
+
         if self.using_offline_fallback:
             query_embedding = self.embeddings.embed_query(query)
-            results = self.vector_store.similarity_search_by_vector(query_embedding, k=k)
+            if faiss_filter is not None:
+                results = self.vector_store.similarity_search_by_vector(
+                    query_embedding, k=k, filter=faiss_filter,
+                )
+            else:
+                results = self.vector_store.similarity_search_by_vector(
+                    query_embedding, k=k,
+                )
         else:
-            results = self.vector_store.similarity_search(query, k=k)
-        docs = [Document(content=doc.page_content, metadata=doc.metadata) for doc in results]
+            if faiss_filter is not None:
+                results = self.vector_store.similarity_search(
+                    query, k=k, filter=faiss_filter,
+                )
+            else:
+                results = self.vector_store.similarity_search(query, k=k)
+
+        # Extract original content (strip the [File: ...] prefix we added)
+        docs: List[Document] = []
+        for doc in results:
+            content = doc.metadata.get("original_content", doc.page_content)
+            metadata = {k: v for k, v in doc.metadata.items() if k != "original_content"}
+            docs.append(Document(content=content, metadata=metadata))
         return docs
 
     def _all_lc_documents(self) -> List[LCDocument]:
@@ -416,7 +510,12 @@ class FAISSVectorStoreService(AbstractVectorStoreService):
 
         self._bm25_retriever.k = k
         results = self._bm25_retriever.invoke(query)
-        return [Document(content=doc.page_content, metadata=doc.metadata) for doc in results]
+        docs: List[Document] = []
+        for doc in results:
+            content = doc.metadata.get("original_content", doc.page_content)
+            metadata = {k: v for k, v in doc.metadata.items() if k != "original_content"}
+            docs.append(Document(content=content, metadata=metadata))
+        return docs
 
     @staticmethod
     def _doc_key(doc: Document) -> str:

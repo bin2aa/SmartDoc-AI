@@ -17,7 +17,10 @@ from src.utils.logger import setup_logger
 from src.utils.exceptions import LLMConnectionError, VectorStoreError
 from src.utils.constants import (
     DEFAULT_STREAMLIT_REPLY_TEMPLATES,
+    LANG_REPLY_TEMPLATES,
     NO_INFO_MARKERS,
+    NO_INFO_MESSAGE,
+    NO_INFO_INSTRUCTION,
     RAG_TYPE_STANDARD,
     RAG_TYPE_CORAG,
 )
@@ -50,6 +53,24 @@ class ChatController:
         
         logger.info("ChatController initialized")
     
+    @staticmethod
+    def _get_source_filters() -> List[str]:
+        """Read current source filters, respecting temporary overrides.
+
+        The ``active_source_filters`` key is bound to a multiselect widget
+        and cannot be modified after the widget is instantiated.  Views
+        that need to temporarily override the filter (e.g. @mention focus
+        mode) write to ``_source_filter_override`` instead.  This helper
+        checks the override first and falls back to the widget value.
+
+        Returns:
+            List of selected source file names (may be empty).
+        """
+        override = st.session_state.get("_source_filter_override")
+        if override is not None:
+            return override
+        return st.session_state.get("active_source_filters", [])
+
     def process_query(self, query: str, k: int = 3) -> Tuple[str, List[Document]]:
         """
         Process user query and return response.
@@ -76,7 +97,7 @@ class ChatController:
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         use_rerank = bool(st.session_state.get("use_rerank", False))
         retrieval_k = int(st.session_state.get("retrieval_k", k))
-        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_sources = self._get_source_filters()
         selected_file_types = st.session_state.get("active_file_type_filters", [])
 
         metadata_filters: Dict[str, Any] = {}
@@ -135,7 +156,9 @@ class ChatController:
         # If no documents found
         if not relevant_docs:
             logger.warning("No relevant documents found")
-            return "I don't have enough information to answer this question.", []
+            lang = self._detect_target_language(query)
+            no_info = NO_INFO_MESSAGE.get(lang, NO_INFO_MESSAGE["en"])
+            return no_info, []
         
         # Build context
         context = "\n\n".join(
@@ -204,7 +227,7 @@ class ChatController:
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         use_rerank = bool(st.session_state.get("use_rerank", False))
         retrieval_k = int(st.session_state.get("retrieval_k", k))
-        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_sources = self._get_source_filters()
         selected_file_types = st.session_state.get("active_file_type_filters", [])
 
         metadata_filters: Dict[str, Any] = {}
@@ -280,8 +303,11 @@ class ChatController:
             logger.warning("No relevant documents found")
             _status_step("[warn]", "Không tìm thấy tài liệu liên quan")
 
+            lang = self._detect_target_language(query)
+            _no_info_msg = NO_INFO_MESSAGE.get(lang, NO_INFO_MESSAGE["en"])
+
             def _no_info_stream():
-                yield "I don't have enough information to answer this question."
+                yield _no_info_msg
 
             return _no_info_stream(), [], rewritten_query
 
@@ -398,7 +424,7 @@ class ChatController:
 
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         metadata_filters: Dict[str, Any] = {}
-        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_sources = self._get_source_filters()
         selected_file_types = st.session_state.get("active_file_type_filters", [])
         if selected_sources:
             metadata_filters["source_files"] = selected_sources
@@ -458,31 +484,59 @@ class ChatController:
 
     def _build_prompt(self, context: str, question: str, chat_history_context: str) -> str:
         """
-        Build prompt for LLM.
+        Build prompt for LLM with explicit language enforcement.
         
         Args:
             context: Retrieved context from documents
             question: User's question
+            chat_history_context: Recent conversation history string
             
         Returns:
             Formatted prompt string
         """
+        # Detect question language for explicit enforcement
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", question))
+        has_vn = any(
+            c in question.lower()
+            for c in ["đ", "ă", "â", "ê", "ô", "ơ", "ư", "á", "à", "ả", "ã", "ạ"]
+        )
+
+        if has_cjk:
+            lang_instruction = "Respond in Chinese (中文)."
+        elif has_vn:
+            lang_instruction = (
+                "Respond ONLY in Vietnamese (Tiếng Việt).\n"
+                "DO NOT use Chinese characters or Chinese language."
+            )
+        else:
+            lang_instruction = (
+                "Respond ONLY in English.\n"
+                "DO NOT use Chinese characters or Chinese language under any circumstances."
+            )
+
+        lang = self._detect_target_language(question)
+        no_info_instr = NO_INFO_INSTRUCTION.get(lang, NO_INFO_INSTRUCTION["en"])
+
         return f"""You are SmartDoc AI, an intelligent document assistant.
 
+CRITICAL LANGUAGE RULE (HIGHEST PRIORITY):
+{lang_instruction}
+
 Answer the QUESTION based ONLY on the CONTEXT below.
-If the context doesn't contain enough information, say "I don't have enough information to answer this question."
-Detect the question language and respond in the SAME language.
+{no_info_instr}
 Keep your answer concise (3-4 sentences maximum).
 Be factual and precise.
 
-    RECENT CONVERSATION:
+    RECENT CONVERSATION (for resolving references only — do NOT use as a knowledge source):
     {chat_history_context}
 
-CONTEXT:
+CONTEXT (this is your ONLY source of factual information):
 {context}
 
 QUESTION:
 {question}
+
+RULE: If the user asks you to add features, code, or logic that are NOT in the documents, explicitly REFUSE that specific part of the request in your text, and DO NOT write the code for it.
 
 ANSWER:"""
 
@@ -500,18 +554,37 @@ ANSWER:"""
         return "\n".join(lines)
 
     def _rewrite_query(self, query: str) -> str:
-        """Rewrite follow-up queries using LLM to create a standalone question."""
+        """Rewrite follow-up queries using LLM to create a standalone question.
+        
+        Only rewrites when the query is a genuine follow-up (contains pronouns
+        or references to previous conversation). Rejects rewrites that introduce
+        unrelated topics from chat history.
+        """
         chat_history = self._get_active_history()
         if not chat_history or len(chat_history) == 0:
             return query
 
-        # Heuristic check for potential follow-up
+        # Stricter follow-up detection: require pronoun/reference markers
+        # AND short query length to qualify as a follow-up.
         stripped = query.strip()
         lowered = stripped.lower()
-        followup_markers = ["nó", "cái đó", "điều đó", "thế còn", "it", "that", "those", "they", "them", "họ", "chúng"]
-        is_followup = len(stripped.split()) <= 10 or any(marker in lowered for marker in followup_markers)
+        followup_markers = [
+            "nó", "cái đó", "điều đó", "thế còn", "cái kia", "vấn đề đó",
+            "phần đó", "chuyện đó", "vậy còn", "thì sao",
+            "it", "that", "those", "they", "them", "this", "what about",
+        ]
+        has_followup_marker = any(marker in lowered for marker in followup_markers)
+        word_count = len(stripped.split())
+
+        # Only rewrite if there's clear evidence of a follow-up:
+        # - Short query (<=5 words) with a pronoun marker, OR
+        # - Has pronoun marker and moderately short (<=8 words)
+        is_followup = (word_count <= 5 and has_followup_marker) or (
+            has_followup_marker and word_count <= 8
+        )
 
         if not is_followup:
+            logger.debug(f"Query not identified as follow-up, keeping original: '{stripped}'")
             return stripped
 
         # Build conversation context for rewriting
@@ -524,7 +597,13 @@ ANSWER:"""
         history_text = "\n".join(history_lines)
 
         rewrite_prompt = f"""Given the following conversation history and a follow-up question, rephrase the follow-up question to be a STANDALONE question that can be understood without the conversation history.
-Maintain the original language of the follow-up question.
+
+CRITICAL RULES:
+1. Maintain the original language of the follow-up question.
+2. If the follow-up question is about a DIFFERENT TOPIC than the conversation, return it AS-IS.
+3. Do NOT merge or combine topics from previous conversation into the new question.
+4. Only resolve pronouns and references (it, that, they, nó, cái đó, etc.) to their actual meaning.
+5. If the question is already clear and self-contained, return it exactly as-is.
 
 CONVERSATION HISTORY:
 {history_text}
@@ -535,20 +614,93 @@ STANDALONE QUESTION:"""
 
         try:
             rewritten = self.llm_service.generate(rewrite_prompt).strip()
-            # Basic validation: if LLM returns something too short or fails, fallback to original + hint
+            # Basic validation: if LLM returns something too short or fails, fallback
             if len(rewritten) > 5:
+                # Topic divergence guard: reject rewrite if it introduces old topics
+                if self._is_topic_divergent(stripped, rewritten, history_text):
+                    logger.warning(
+                        f"Rewrite rejected (topic divergence): "
+                        f"'{stripped}' -> '{rewritten}'. Using original."
+                    )
+                    return stripped
                 logger.info(f"LLM rewrote query: '{query}' -> '{rewritten}'")
                 return rewritten
         except Exception as e:
             logger.warning(f"LLM query rewriting failed: {e}")
 
-        # Fallback to simple concatenation if LLM fails
-        recent_user_questions = [msg.content for msg in recent_messages if msg.role == "user"]
-        previous_question = recent_user_questions[-1] if recent_user_questions else ""
-        if previous_question:
-            return f"{stripped} (về chủ đề: {previous_question})"
-        
+        # Fallback to original query — do NOT append previous topic
         return stripped
+
+    @staticmethod
+    def _is_topic_divergent(
+        original_query: str, rewritten_query: str, history_text: str
+    ) -> bool:
+        """
+        Detect if the rewritten query has drifted to a different topic.
+
+        Compares key terms between original query, rewritten query, and chat
+        history. Returns True if the rewrite introduces too many terms from
+        history that were NOT present in the original query.
+
+        Args:
+            original_query: The user's raw input query
+            rewritten_query: The LLM-rewritten standalone query
+            history_text: Recent conversation history text
+
+        Returns:
+            True if topic divergence is detected (rewrite should be rejected)
+        """
+        # Common stop words to exclude from term analysis
+        stop_words = {
+            "và", "của", "là", "có", "không", "được", "cho", "với", "một", "các",
+            "những", "này", "đó", "khi", "nếu", "thì", "để", "từ", "về", "đã",
+            "sẽ", "đang", "tôi", "bạn", "chúng", "họ", "nó", "cái", "còn", "thế",
+            "như", "sau", "trước", "nào", "vậy", "gì", "thêm", "nữa", "đi", "lên",
+            "xuống", "ra", "vào", "lại", "mà", "nhưng", "vì", "nên", "rằng", "cũng",
+            "đây", "kia", "vẫn", "mới", "phải", "nhiều", "ít", "hơn", "nhất",
+            "the", "and", "for", "with", "this", "that", "from", "are", "was",
+            "were", "been", "have", "has", "had", "will", "would", "could",
+            "should", "does", "what", "which", "when", "where", "who", "how",
+            "about", "into", "than", "then", "also", "just", "only", "over",
+            "some", "very", "can", "not", "but", "its", "our", "your", "their",
+        }
+
+        def extract_terms(text: str) -> set:
+            """Extract meaningful terms (>3 chars, not stop words)."""
+            words = re.findall(r'\b[a-zà-ỹ]{4,}\b', text.lower())
+            return {w for w in words if w not in stop_words}
+
+        original_terms = extract_terms(original_query)
+        rewritten_terms = extract_terms(rewritten_query)
+        history_terms = extract_terms(history_text)
+
+        if not original_terms:
+            return False  # Can't determine topic from very short original
+
+        # Terms in rewrite that came from history but weren't in original
+        history_intrusion = (rewritten_terms - original_terms) & history_terms
+
+        # Terms from original that were completely lost in rewrite
+        lost_terms = original_terms - rewritten_terms
+
+        # Calculate divergence metrics
+        loss_ratio = len(lost_terms) / len(original_terms)
+        intrusion_count = len(history_intrusion)
+
+        # Signal 1: High original term loss AND history terms intruding
+        if loss_ratio > 0.5 and intrusion_count >= 2:
+            logger.info(
+                f"Topic divergence: lost {lost_terms}, "
+                f"history intrusion {history_intrusion}"
+            )
+            return True
+
+        # Signal 2: Excessive history term intrusion regardless of loss
+        if intrusion_count >= 4:
+            logger.info(f"Excessive history intrusion: {history_intrusion}")
+            return True
+
+        return False
 
     @staticmethod
     def _detect_target_language(query: str) -> str:
@@ -627,24 +779,49 @@ REWRITTEN ANSWER:"""
             history.clear()
             logger.info("Chat history cleared for active session")
 
-    def format_reply_for_streamlit(self, answer: str, sources: List[Document]) -> str:
+    def format_reply_for_streamlit(
+        self,
+        answer: str,
+        sources: List[Document],
+        query: str = "",
+    ) -> str:
         """
-        Format assistant reply for Streamlit using intro/body/footer templates.
+        Format assistant reply for Streamlit using language-aware templates.
+
+        Detects the query language and selects intro/body/footer templates
+        that match. Falls back to English templates if language-specific
+        ones are not available.
 
         Args:
             answer: Raw answer from LLM
             sources: Retrieved source documents
+            query: Original user question (used for language detection)
 
         Returns:
             Formatted text for Streamlit UI
         """
-        templates = st.session_state.get('reply_templates', DEFAULT_STREAMLIT_REPLY_TEMPLATES)
-        found_template = templates.get('found', DEFAULT_STREAMLIT_REPLY_TEMPLATES['found'])
-        not_found_template = templates.get('not_found', DEFAULT_STREAMLIT_REPLY_TEMPLATES['not_found'])
+        # Detect language from query (or from answer if query unavailable)
+        detected_lang = self._detect_target_language(query or answer or "")
+        lang_templates = LANG_REPLY_TEMPLATES.get(detected_lang, LANG_REPLY_TEMPLATES.get("en", {}))
 
-        normalized_answer = (answer or '').strip().lower()
-        has_no_info_marker = any(marker in normalized_answer for marker in NO_INFO_MARKERS)
-        has_answer = bool((answer or '').strip()) and (not has_no_info_marker) and bool(sources)
+        # Use language-aware templates.  Session-state templates are only
+        # used when the user has *explicitly* customised them (non-empty intro).
+        user_templates = st.session_state.get('reply_templates', None)
+        using_custom = (
+            user_templates
+            and user_templates.get("found", {}).get("intro", "").strip()
+        )
+        if using_custom:
+            found_template = user_templates.get('found', lang_templates.get('found', {}))
+            not_found_template = user_templates.get('not_found', lang_templates.get('not_found', {}))
+        else:
+            found_template = lang_templates.get('found', {})
+            not_found_template = lang_templates.get('not_found', {})
+
+        # Use the same strict refusal check as _compute_confidence
+        # to avoid false positives (e.g. long answers mentioning "thông tin")
+        is_refusal = self._is_refusal_response(answer) if answer else True
+        has_answer = bool((answer or '').strip()) and (not is_refusal) and bool(sources)
 
         selected = found_template if has_answer else not_found_template
         parts: List[str] = [selected.get('intro', '').strip()]
@@ -713,15 +890,42 @@ JUSTIFICATION: <one concise sentence in Vietnamese explaining the rating>"""
             logger.warning(f"Self-evaluation failed: {e}")
             return 3.0, f"Không thể tự đánh giá: {str(e)}"
 
-    def _compute_confidence(self, sources: List[Document], self_eval_score: float) -> Tuple[float, str]:
+    def _compute_confidence(
+        self,
+        sources: List[Document],
+        self_eval_score: float,
+        answer: str = "",
+        entities: Optional[List[str]] = None,
+    ) -> Tuple[float, str]:
         """
-        Compute confidence score based on retrieval quality and self-evaluation.
+        Compute confidence score based on retrieval quality, self-evaluation,
+        and entity coverage.
+
+        Args:
+            sources: Retrieved source documents
+            self_eval_score: Self-evaluation score (1-5)
+            answer: The actual answer text (used to detect refusals)
+            entities: List of detected entities from query (for coverage boost)
 
         Returns:
             Tuple of (confidence 0-100%, level description)
         """
         if not sources:
             return 0.0, "Không có tài liệu tham khảo"
+
+        # If the answer is a refusal/no-info response, confidence is low
+        # regardless of retrieval quality or self-eval score.
+        if answer and self._is_refusal_response(answer):
+            logger.info(
+                "Confidence penalized: answer is a refusal/no-info response"
+            )
+            # Still compute base score for transparency, but cap it low
+            base_eval = max(1.0, min(5.0, self_eval_score))
+            eval_factor = (base_eval - 1.0) / 4.0
+            confidence = round(eval_factor * 25.0, 1)  # Max ~25% for refusals
+            confidence = max(0.0, min(30.0, confidence))
+            level = "Độ tin cậy rất thấp"
+            return confidence, level
 
         # Retrieval quality: average term overlap
         overlaps = [s.metadata.get("used_term_overlap", 0) for s in sources]
@@ -736,6 +940,31 @@ JUSTIFICATION: <one concise sentence in Vietnamese explaining the rating>"""
 
         # Weighted combination
         confidence = (retrieval_quality * 0.3 + source_factor * 0.2 + eval_factor * 0.5) * 100
+
+        # ── Entity Coverage Boost ───────────────────────────────
+        # If all query entities appear in the answer text, boost confidence
+        # significantly. This prevents low scores when comparing entities
+        # with different names (word overlap is low but coverage is complete).
+        if entities and answer:
+            answer_lower = answer.lower()
+            covered = sum(1 for e in entities if e.lower() in answer_lower)
+            entity_coverage = covered / len(entities) if entities else 0.0
+
+            if entity_coverage >= 1.0:
+                # All entities found → strong boost
+                confidence = max(confidence, 75.0)
+                logger.info(
+                    "Entity coverage boost: %d/%d entities found in answer → confidence=%.1f%%",
+                    covered, len(entities), confidence,
+                )
+            elif entity_coverage >= 0.5:
+                # At least half of entities found → moderate boost
+                confidence = max(confidence, 60.0)
+                logger.info(
+                    "Entity coverage partial boost: %d/%d entities → confidence=%.1f%%",
+                    covered, len(entities), confidence,
+                )
+
         confidence = round(max(0.0, min(100.0, confidence)), 1)
 
         if confidence >= 80:
@@ -748,6 +977,63 @@ JUSTIFICATION: <one concise sentence in Vietnamese explaining the rating>"""
             level = "Độ tin cậy rất thấp"
 
         return confidence, level
+
+    @staticmethod
+    def _is_refusal_response(answer: str) -> bool:
+        """
+        Check if the answer is a genuine refusal/no-info response.
+
+        Uses a strict multi-criteria check to avoid false positives:
+        - Short answers (< 150 chars): check directly against markers
+        - Longer answers: only refusal if the answer is purely a refusal
+          phrase with minimal extra content (< 80 chars beyond marker).
+
+        This prevents false positives where a detailed answer happens to
+        contain "thông tin" or starts with "không đủ thông tin" but
+        still provides valuable partial information.
+
+        Examples:
+        - "Tài liệu không chứa đủ thông tin." → True (pure refusal)
+        - "Tài liệu không chứa đủ thông tin. Tài liệu chỉ cung cấp thông
+           tin về A và B..." → False (has substantive content beyond refusal)
+
+        Args:
+            answer: The answer text to check
+
+        Returns:
+            True if this is a genuine refusal response
+        """
+        if not answer or not answer.strip():
+            return True  # Empty answer = de facto refusal
+
+        normalized = answer.strip().lower()
+
+        # Short responses (< 150 chars): check directly against markers.
+        # Genuine refusals are typically very short.
+        if len(normalized) < 150:
+            return any(marker in normalized for marker in NO_INFO_MARKERS)
+
+        # Longer responses: check if there's substantive content beyond
+        # the refusal marker. If the LLM says "không đủ thông tin" but
+        # then adds partial info (e.g. "Tài liệu chỉ cung cấp thông tin
+        # về A và B, nhưng không so sánh trực tiếp"), that's valuable
+        # content that should be shown to the user.
+        for marker in NO_INFO_MARKERS:
+            if marker in normalized:
+                marker_idx = normalized.find(marker)
+                # Content excluding the marker phrase itself
+                before = normalized[:marker_idx].strip()
+                after = normalized[marker_idx + len(marker):].strip()
+                substantive_content = len(before) + len(after)
+                # If there's meaningful content (> 80 chars) beyond
+                # the marker, this is NOT a pure refusal — it's an
+                # answer with partial info + disclaimer.
+                if substantive_content > 80:
+                    continue
+                # Very little content beyond marker → pure refusal
+                return True
+
+        return False
 
     def _multi_hop_reasoning(
         self,
@@ -890,7 +1176,7 @@ Provide a clear, comprehensive answer:"""
         if self.vector_service is None or not self.vector_service.is_initialized:
             raise VectorStoreError("Please upload documents first")
 
-        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_sources = self._get_source_filters()
         selected_file_types = st.session_state.get("active_file_type_filters", [])
         metadata_filters: Dict[str, Any] = {}
         if selected_sources:
@@ -908,7 +1194,9 @@ Provide a clear, comprehensive answer:"""
             answer, sources = self._normal_retrieval(rewritten, k, metadata_filters)
 
         if not answer:
-            return "I don't have enough information to answer this question.", [], 0.0, "Độ tin cậy rất thấp", "", rewritten
+            lang = self._detect_target_language(query)
+            no_info = NO_INFO_MESSAGE.get(lang, NO_INFO_MESSAGE["en"])
+            return no_info, [], 0.0, "Độ tin cậy rất thấp", "", rewritten
 
         answer = self._enforce_answer_language(answer, query)
 
@@ -965,8 +1253,10 @@ Provide a clear, comprehensive answer:"""
         rag_type = st.session_state.get("rag_type", RAG_TYPE_STANDARD)
         compare = bool(st.session_state.get("compare_rag", False))
         retrieval_k = int(st.session_state.get("retrieval_k", k))
+        use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
+        use_rerank = bool(st.session_state.get("use_rerank", False))
 
-        selected_sources = st.session_state.get("active_source_filters", [])
+        selected_sources = self._get_source_filters()
         selected_file_types = st.session_state.get("active_file_type_filters", [])
         metadata_filters: Dict[str, Any] = {}
         if selected_sources:
@@ -975,6 +1265,9 @@ Provide a clear, comprehensive answer:"""
             metadata_filters["file_types"] = selected_file_types
 
         conversation_context = self._conversation_context(max_turns=4)
+
+        # ── Rewrite query for better retrieval ──────────────────
+        rewritten_query = self._rewrite_query(query)
 
         # ── Check vector store ──────────────────────────────────
         if self.vector_service is None or not self.vector_service.is_initialized:
@@ -985,14 +1278,17 @@ Provide a clear, comprehensive answer:"""
         logger.info(f"Using RAG strategy: {rag_type}")
 
         stream_gen, docs, metrics = strategy.process_query_stream(
-            query=query,
+            query=rewritten_query,
             vector_service=self.vector_service,
             llm_service=self.llm_service,
             k=retrieval_k,
             status_container=status_container,
             metadata_filters=metadata_filters,
             conversation_context=conversation_context,
+            use_hybrid=use_hybrid,
+            use_rerank=use_rerank,
         )
+        metrics["rewritten_query"] = rewritten_query if rewritten_query != query else None
 
         # ── Comparison mode: run the other strategy ─────────────
         if compare:
@@ -1007,18 +1303,23 @@ Provide a clear, comprehensive answer:"""
             # Run the other strategy (non-streaming — collect full answer)
             try:
                 other_stream, other_docs, other_metrics = other_strategy.process_query_stream(
-                    query=query,
+                    query=rewritten_query,
                     vector_service=self.vector_service,
                     llm_service=self.llm_service,
                     k=retrieval_k,
                     status_container=None,  # Don't clutter UI
                     metadata_filters=metadata_filters,
                     conversation_context=conversation_context,
+                    use_hybrid=use_hybrid,
+                    use_rerank=use_rerank,
                 )
 
                 # Collect the full answer from the other strategy
                 other_answer = "".join(other_stream)
                 other_metrics["answer_length"] = len(other_answer)
+
+                # Mark used chunks for comparison answer
+                self._mark_used_chunks(answer=other_answer, sources=other_docs)
 
                 st.session_state.rag_comparison_result = {
                     "primary_type": rag_type,
@@ -1041,6 +1342,14 @@ Provide a clear, comprehensive answer:"""
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         use_rerank = bool(st.session_state.get("use_rerank", False))
         retrieval_k = int(st.session_state.get("retrieval_k", k))
+
+        selected_sources = self._get_source_filters()
+        selected_file_types = st.session_state.get("active_file_type_filters", [])
+        metadata_filters: Dict[str, Any] = {}
+        if selected_sources:
+            metadata_filters["source_files"] = selected_sources
+        if selected_file_types:
+            metadata_filters["file_types"] = selected_file_types
 
         if hasattr(self.vector_service, "search"):
             relevant_docs, retrieval_stats = self.vector_service.search(

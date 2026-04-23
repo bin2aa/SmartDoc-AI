@@ -144,6 +144,11 @@ class SessionStateManager:
         # Streamlit reply templates (intro/body/footer)
         if 'reply_templates' not in st.session_state:
             st.session_state.reply_templates = DEFAULT_STREAMLIT_REPLY_TEMPLATES
+        else:
+            # Clear legacy Vietnamese templates — language detection now handles this
+            current_intro = st.session_state.reply_templates.get("found", {}).get("intro", "")
+            if "Chào bạn" in current_intro:
+                st.session_state.reply_templates = DEFAULT_STREAMLIT_REPLY_TEMPLATES
 
         # ── Loaded documents (with persistence) ─────────────────
         if 'loaded_documents' not in st.session_state:

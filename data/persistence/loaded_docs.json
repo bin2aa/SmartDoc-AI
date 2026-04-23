@@ -1,50 +1,26 @@
 [
   {
-    "name": "Chapter-2_-Operators-010725-104337.pdf",
-    "path": "/home/hung/Desktop/clone_1/SmartDoc-AI/data/uploads/Chapter-2_-Operators-010725-104337.pdf",
+    "name": "vd1.pdf",
+    "path": "/home/manax/projects/OSSD/data/uploads/vd1.pdf",
     "file_type": ".pdf",
-    "chunks": 10,
+    "chunks": 4,
     "is_ocr": false,
-    "file_size_bytes": 746715,
-    "file_size_mb": 0.71,
-    "uploaded_at": "2026-04-16T19:35:45.503642",
-    "page_count": 5,
-    "title": "Chapter 2  Operators 010725 104337"
+    "file_size_bytes": 227479,
+    "file_size_mb": 0.22,
+    "uploaded_at": "2026-04-23T14:35:52.003658",
+    "page_count": 2,
+    "title": "vd1"
   },
   {
-    "name": "Chapter-3_-Making-decisions-010725-104347.pdf",
-    "path": "/home/hung/Desktop/clone_1/SmartDoc-AI/data/uploads/Chapter-3_-Making-decisions-010725-104347.pdf",
+    "name": "vd2.pdf",
+    "path": "/home/manax/projects/OSSD/data/uploads/vd2.pdf",
     "file_type": ".pdf",
-    "chunks": 15,
+    "chunks": 3,
     "is_ocr": false,
-    "file_size_bytes": 1306906,
-    "file_size_mb": 1.25,
-    "uploaded_at": "2026-04-16T19:35:47.033372",
-    "page_count": 8,
-    "title": "Chapter 3  Making decisions 010725 104347"
-  },
-  {
-    "name": "Chapter-4_-Core-APIs-010725-104353.pdf",
-    "path": "/home/hung/Desktop/clone_1/SmartDoc-AI/data/uploads/Chapter-4_-Core-APIs-010725-104353.pdf",
-    "file_type": ".pdf",
-    "chunks": 24,
-    "is_ocr": false,
-    "file_size_bytes": 2095674,
-    "file_size_mb": 2.0,
-    "uploaded_at": "2026-04-16T19:35:49.494609",
-    "page_count": 12,
-    "title": "Chapter 4  Core APIs 010725 104353"
-  },
-  {
-    "name": "Chapter-5_-Methods-010725-104400.pdf",
-    "path": "/home/hung/Desktop/clone_1/SmartDoc-AI/data/uploads/Chapter-5_-Methods-010725-104400.pdf",
-    "file_type": ".pdf",
-    "chunks": 31,
-    "is_ocr": false,
-    "file_size_bytes": 2220925,
-    "file_size_mb": 2.12,
-    "uploaded_at": "2026-04-16T19:39:45.956501",
-    "page_count": 15,
-    "title": "Chapter 5  Methods 010725 104400"
+    "file_size_bytes": 223998,
+    "file_size_mb": 0.21,
+    "uploaded_at": "2026-04-23T14:35:52.697629",
+    "page_count": 2,
+    "title": "vd2"
   }
 ]

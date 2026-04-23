@@ -10,8 +10,8 @@ from src.utils.logger import setup_logger
 from src.utils.exceptions import DocumentLoadError
 from src.utils.constants import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 
-# Import hàm OCR
-from src.utils.ocr_utils import extract_text_with_ocr
+# Import OCR with availability check
+from src.utils.ocr_utils import extract_text_with_ocr, OCR_AVAILABLE, get_availability_info
 
 logger = setup_logger(__name__)
 
@@ -138,11 +138,43 @@ class DocumentService:
             is_pdf_ocr = use_ocr and extension == '.pdf'
 
             if is_pdf_ocr or is_image_file:
-                logger.info(f"Bắt đầu trích xuất OCR cho file: {file_path}")
+                # Guard: check OCR availability before attempting
+                if not OCR_AVAILABLE:
+                    ocr_info = get_availability_info()
+                    missing = ", ".join(ocr_info["missing_deps"])
+                    if is_image_file:
+                        raise DocumentLoadError(
+                            f"Cannot process image file '{extension}' — "
+                            f"OCR dependencies not installed: {missing}. "
+                            f"Install with: pip install {' '.join(ocr_info['missing_deps'])}"
+                        )
+                    else:
+                        raise DocumentLoadError(
+                            f"Cannot OCR scanned PDF — "
+                            f"OCR dependencies not installed: {missing}. "
+                            f"Install with: pip install {' '.join(ocr_info['missing_deps'])}"
+                        )
+
+                logger.info("[OCR] Starting OCR extraction for: %s (type=%s)", file_path, extension)
                 extracted_text = extract_text_with_ocr(file_path)
 
-                if not extracted_text.strip():
-                    raise ValueError("Không nhận diện được chữ nào trong tài liệu này.")
+                if not extracted_text or not extracted_text.strip():
+                    logger.warning(
+                        "[OCR] ⚠️ No text extracted from '%s' — skipping file. "
+                        "The document may be blank or unreadable.",
+                        file_path,
+                    )
+                    raise DocumentLoadError(
+                        f"OCR could not read any text from '{Path(file_path).name}'. "
+                        f"The file may be blank, contain only images, or be unreadable. "
+                        f"Try a different language pack or higher DPI setting."
+                    )
+
+                char_count = len(extracted_text.strip())
+                logger.info(
+                    "[OCR] ✅ Successfully extracted %d chars from '%s'",
+                    char_count, file_path,
+                )
 
                 # Bọc text vào LCDocument để tương thích hoàn toàn với logic cũ
                 lc_docs = [LCDocument(page_content=extracted_text, metadata={"source": file_path})]
