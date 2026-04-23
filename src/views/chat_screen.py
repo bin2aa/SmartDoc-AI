@@ -1,12 +1,17 @@
-"""Chat screen for SmartDoc AI."""
+"""Chat screen for SmartDoc AI — main orchestrator."""
+
+from typing import List
 
 import streamlit as st
-from typing import List
+
 from src.controllers.chat_controller import ChatController
-from src.views.components import UIComponents
-from src.models.document_model import Document
+from src.views.components import UIComponents, icon
+from src.views.chat_history_renderer import render_chat_history
+from src.views.chat_input_handler import render_chat_input
+from src.views.rag_comparison import render_comparison_display, render_retrieval_metrics
+from src.models.chat_model import ChatHistory
+from src.services.persistence_service import load_chat_history
 from src.utils.logger import setup_logger
-from src.utils.exceptions import LLMConnectionError
 
 logger = setup_logger(__name__)
 
@@ -14,214 +19,169 @@ logger = setup_logger(__name__)
 class ChatScreen:
     """
     Chat interface screen following MVC pattern.
-    
+
     Displays chat history and handles user interactions.
+    Delegates rendering to specialized modules.
     """
-    
+
     def __init__(self, controller: ChatController):
         """
         Initialize chat screen.
-        
+
         Args:
             controller: Chat controller instance
         """
         self.controller = controller
         self.components = UIComponents()
-    
+
     def render(self):
         """Render the chat screen."""
-        st.title("💬 Chat with Your Documents")
+        st.markdown(f"## {icon('chat')} Chat với tài liệu", unsafe_allow_html=True)
 
-        # Sidebar is always shown so users can review history.
-        self._render_sidebar_actions()
-        
         # Check if vector store is ready
         if not st.session_state.get('vector_store_initialized', False):
             self._render_empty_state()
             return
-        
+
+        # Ensure chat_history exists (recovery mechanism)
+        self._ensure_history()
+
+        # Render file filter selector above chat input
+        self._render_file_filter()
+
         # Render chat interface
-        self._render_chat_history()
-        self._render_chat_input()
-        
-        self._render_retrieval_metrics()
-    
+        render_chat_history(st.session_state.get('chat_history'), self.components)
+        render_chat_input(self.controller, self.components)
+
+        # Render comparison (persists across reruns via session_state)
+        render_comparison_display()
+
+        render_retrieval_metrics()
+
+    def _ensure_history(self):
+        """Ensure chat_history exists in session_state, recover from disk if needed."""
+        history = st.session_state.get('chat_history')
+        if history is not None and len(history) > 0:
+            logger.debug(f"Chat history OK: {len(history)} messages")
+            return
+
+        # History is empty or missing — try to recover from disk
+        if history is None:
+            logger.warning("chat_history is None in session_state — recovering from disk")
+            saved = load_chat_history()
+            if saved and len(saved) > 0:
+                st.session_state.chat_history = saved
+                logger.info(f"Recovered chat history from disk ({len(saved)} messages)")
+            else:
+                st.session_state.chat_history = ChatHistory()
+                logger.info("Created new empty ChatHistory")
+        elif len(history) == 0:
+            # Empty history in memory — check disk as well
+            saved = load_chat_history()
+            if saved and len(saved) > 0:
+                logger.warning(f"Memory history is empty but disk has {len(saved)} messages — recovering")
+                st.session_state.chat_history = saved
+
+    def _render_file_filter(self):
+        """Render compact file selector to filter search by specific documents.
+
+        Displays a multiselect with all uploaded documents, allowing users to
+        restrict retrieval to selected files only.  Also renders clickable
+        file chips for quick toggle and @mention hints.
+        """
+        loaded_docs: List[dict] = st.session_state.get("loaded_documents", [])
+        if not loaded_docs:
+            return
+
+        # Build sorted unique file name list
+        source_names = sorted({
+            item.get("name", "")
+            for item in loaded_docs
+            if item.get("name")
+        })
+        if not source_names:
+            return
+
+        # Apply any pending filter changes BEFORE the multiselect widget is
+        # instantiated.  Buttons below write to a temporary key
+        # (_pending_source_filters) and call st.rerun().  On the next run we
+        # apply that pending value here so the widget picks it up cleanly.
+        if "_pending_source_filters" in st.session_state:
+            st.session_state.active_source_filters = (
+                st.session_state.pop("_pending_source_filters")
+            )
+
+        # ── Multiselect: use active_source_filters as widget key directly ──
+        # This avoids the sync conflict that caused auto-deselect on rerun.
+        selected_sources = st.multiselect(
+            "🎯 Chọn file để tìm kiếm (để trống = tất cả)",
+            options=source_names,
+            default=st.session_state.get("active_source_filters", []),
+            key="active_source_filters",
+            help=(
+                "Chọn file cụ thể để giới hạn tìm kiếm. "
+                "Hoặc dùng @filename trong câu hỏi (VD: @report.pdf nội dung là gì?)."
+            ),
+        )
+
+        # Visual indicator + clear button
+        indicator_cols = st.columns([5, 1])
+        with indicator_cols[0]:
+            if selected_sources:
+                badges = " ".join(f"`{name}`" for name in selected_sources)
+                st.caption(f"📚 Đang tìm trong: {badges} ({len(selected_sources)}/{len(source_names)} files)")
+            else:
+                st.caption(f"📚 Tìm trong tất cả {len(source_names)} files")
+        with indicator_cols[1]:
+            if selected_sources:
+                if st.button(
+                    "✕ Xóa",
+                    key="clear_file_filter_btn",
+                    help="Xóa bộ lọc file",
+                ):
+                    # Write to a temporary key and rerun; the value will be
+                    # applied *before* the multiselect widget on the next run.
+                    st.session_state._pending_source_filters = []
+                    st.rerun()
+
+        # ── Quick-select file chips ──────────────────────────────────────
+        st.markdown(
+            '<span style="font-size:0.8em;color:#888;">💡 Click file để chọn nhanh · Gõ <b>@filename</b> trong chat để focus</span>',
+            unsafe_allow_html=True,
+        )
+        chips = st.columns(min(len(source_names), 5))
+        for idx, name in enumerate(source_names):
+            col = chips[idx % len(chips)]
+            is_selected = name in selected_sources
+            label = f"{'✅' if is_selected else '📄'} {name}"
+            with col:
+                if st.button(
+                    label,
+                    key=f"chip_{name}",
+                    help=f"{'Bỏ chọn' if is_selected else 'Chọn'} {name}",
+                    use_container_width=True,
+                ):
+                    current = list(st.session_state.get("active_source_filters", []))
+                    if is_selected:
+                        current = [f for f in current if f != name]
+                    else:
+                        current.append(name)
+                    # Write to a temporary key and rerun; the value will be
+                    # applied *before* the multiselect widget on the next run.
+                    st.session_state._pending_source_filters = current
+                    st.rerun()
+
     def _render_empty_state(self):
         """Show empty state when no documents loaded."""
-        self.components.info_alert("Please upload documents first in the Documents tab")
-        
-        st.markdown("""
-        ### 👋 Welcome to SmartDoc AI!
-        
-        To get started:
-        1. Go to the **📄 Documents** tab
-        2. Upload a PDF, DOCX, or TXT file
-        3. Come back here to ask questions about your documents
-        
-        SmartDoc AI uses RAG (Retrieval-Augmented Generation) to provide accurate answers based on your documents.
-        """)
-    
-    def _render_chat_history(self):
-        """Display chat history."""
-        chat_history = st.session_state.get('chat_history')
-        
-        if not chat_history or len(chat_history) == 0:
-            self.components.info_alert("Start a conversation by asking a question below")
-            return
-        
-        # Display messages
-        for msg_idx, message in enumerate(chat_history.messages):
-            avatar = "🧑" if message.role == "user" else "🤖"
-            self.components.chat_message(
-                role=message.role,
-                content=message.content,
-                avatar=avatar
-            )
-            
-            # Display sources if available
-            if message.role == "assistant" and message.metadata and message.metadata.get('sources'):
-                self._render_sources(message.metadata['sources'], msg_idx)
-    
-    def _render_sources(self, sources: List[Document], msg_idx: int):
-        """
-        Render source citations.
-        
-        Args:
-            sources: List of source documents
-            msg_idx: Message index for unique key generation
-        """
-        with st.expander("📚 View Sources"):
-            for src_idx, source in enumerate(sources, 1):
-                source_file = source.metadata.get("source_file") or source.source_file
-                open_link = f"data/uploads/{source_file}" if source_file else ""
-                is_used = bool(source.metadata.get("used_in_answer", False))
-                st.markdown(f"**Source {src_idx}:** {source.get_citation()}")
-                if open_link:
-                    st.markdown(f"[Open source file]({open_link})")
+        self.components.info_alert("Vui lòng tải tài liệu lên trước trong tab Documents")
 
-                overlap = source.metadata.get("used_term_overlap", 0)
-                if is_used:
-                    st.caption(f"✅ Highlighted as used context (term overlap: {overlap})")
-                else:
-                    st.caption("ℹ️ Retrieved context")
+        st.markdown(f"""
+        ### {icon('waving_hand')} Chào mừng đến SmartDoc AI!
 
-                preview = source.content[:300] + "..." if len(source.content) > 300 else source.content
-                if is_used:
-                    preview = f"<mark>{preview}</mark>"
+        Để bắt đầu:
+        1. Nhấn **Documents** ở sidebar bên trái
+        2. Tải lên file PDF, DOCX, hoặc TXT
+        3. Quay lại đây để đặt câu hỏi về tài liệu
 
-                st.text_area(
-                    f"Context {src_idx}",
-                    value=source.content,
-                    height=100,
-                    key=f"source_msg{msg_idx}_src{src_idx}",
-                    disabled=True
-                )
-                st.markdown(preview, unsafe_allow_html=True)
-    
-    def _render_chat_input(self):
-        """Render chat input box."""
-        if prompt := st.chat_input("Ask a question about your documents..."):
-            # Add user message
-            self._add_user_message(prompt)
-            
-            # Get AI response
-            with self.components.loading_spinner("🤔 Thinking..."):
-                try:
-                    answer, sources = self.controller.process_query(prompt)
-                    formatted_answer = self.controller.format_reply_for_streamlit(answer, sources)
-                    self.controller.notify_n8n_chat_event(
-                        question=prompt,
-                        formatted_answer=formatted_answer,
-                        raw_answer=answer,
-                        sources=sources,
-                    )
-                    self._add_assistant_message(formatted_answer, sources)
-                    st.rerun()
-                except LLMConnectionError as e:
-                    logger.error(f"LLM error while processing query: {e}")
-                    self.components.error_alert(
-                        "Khong du RAM de chay model hien tai",
-                        details=(
-                            f"{str(e)}\n\n"
-                            "Goi y giam RAM:\n"
-                            "1) Vao tab Settings -> LLM Configuration\n"
-                            "2) Chon model nhe da duoc cai trong may\n"
-                            "3) Giam num_ctx xuong 256 va num_predict xuong 64\n"
-                            "4) Dat keep_alive = 0m de giai phong RAM sau moi cau hoi\n"
-                            "5) Neu model chua co, pull truoc: ollama pull <model_name>"
-                        ),
-                    )
-                except Exception as e:
-                    logger.error(f"Error processing query: {e}")
-                    self.components.error_alert(
-                        "Failed to process your question",
-                        details=str(e)
-                    )
-    
-    def _add_user_message(self, content: str):
-        """
-        Add user message to chat.
-        
-        Args:
-            content: Message content
-        """
-        st.session_state.chat_history.add_message("user", content)
-        logger.info(f"User message added: {content[:50]}...")
-    
-    def _add_assistant_message(self, content: str, sources: List[Document] = None):
-        """
-        Add assistant message to chat.
-        
-        Args:
-            content: Message content
-            sources: Optional source documents
-        """
-        metadata = {'sources': sources} if sources else None
-        st.session_state.chat_history.add_message("assistant", content, metadata=metadata)
-        logger.info(f"Assistant message added: {content[:50]}...")
-    
-    def _render_sidebar_actions(self):
-        """Render sidebar action buttons."""
-        st.sidebar.markdown("---")
-        self.components.sidebar_section("Chat Actions", "🔧")
-
-        confirm_clear = st.sidebar.checkbox("Confirm clear history")
-        col1, col2 = st.sidebar.columns(2)
-
-        with col1:
-            if st.button("🗑️ Clear History", use_container_width=True, disabled=not confirm_clear):
-                self.controller.clear_history()
-                st.rerun()
-
-        with col2:
-            num_messages = len(st.session_state.get('chat_history', []))
-            st.metric("Messages", num_messages)
-
-        st.sidebar.markdown("---")
-        self.components.sidebar_section("Conversation History", "🕘")
-        self._render_sidebar_history()
-
-    def _render_sidebar_history(self):
-        """Render compact conversation history in sidebar."""
-        chat_history = st.session_state.get("chat_history")
-        if not chat_history or len(chat_history) == 0:
-            st.sidebar.caption("No messages yet")
-            return
-
-        for idx, message in enumerate(chat_history.get_recent(20), start=1):
-            if message.role != "user":
-                continue
-            st.sidebar.markdown(f"{idx}. {message.content}")
-
-    def _render_retrieval_metrics(self):
-        """Show retrieval strategy metrics for hybrid/pure-vector comparison."""
-        stats = st.session_state.get("last_retrieval_stats", {})
-        if not stats:
-            return
-
-        with st.expander("📈 Retrieval Metrics"):
-            st.json(stats)
-            comparison = st.session_state.get("retrieval_comparison")
-            if comparison:
-                st.markdown("**Hybrid vs Vector**")
-                st.write(comparison)
+        SmartDoc AI sử dụng RAG (Retrieval-Augmented Generation) để trả lời câu hỏi dựa trên tài liệu của bạn.
+        """, unsafe_allow_html=True)

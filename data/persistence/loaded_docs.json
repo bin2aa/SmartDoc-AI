@@ -1,0 +1,26 @@
+[
+  {
+    "name": "vd1.pdf",
+    "path": "/home/manax/projects/OSSD/data/uploads/vd1.pdf",
+    "file_type": ".pdf",
+    "chunks": 4,
+    "is_ocr": false,
+    "file_size_bytes": 227479,
+    "file_size_mb": 0.22,
+    "uploaded_at": "2026-04-23T14:35:52.003658",
+    "page_count": 2,
+    "title": "vd1"
+  },
+  {
+    "name": "vd2.pdf",
+    "path": "/home/manax/projects/OSSD/data/uploads/vd2.pdf",
+    "file_type": ".pdf",
+    "chunks": 3,
+    "is_ocr": false,
+    "file_size_bytes": 223998,
+    "file_size_mb": 0.21,
+    "uploaded_at": "2026-04-23T14:35:52.697629",
+    "page_count": 2,
+    "title": "vd2"
+  }
+]
