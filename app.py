@@ -45,6 +45,7 @@ from src.utils.constants import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_STREAMLIT_REPLY_TEMPLATES,
     AVAILABLE_MODELS,
+    DEFAULT_RAG_TYPE,
 )
 
 logger = setup_logger(__name__)
@@ -143,6 +144,11 @@ class SessionStateManager:
         # Streamlit reply templates (intro/body/footer)
         if 'reply_templates' not in st.session_state:
             st.session_state.reply_templates = DEFAULT_STREAMLIT_REPLY_TEMPLATES
+        else:
+            # Clear legacy Vietnamese templates — language detection now handles this
+            current_intro = st.session_state.reply_templates.get("found", {}).get("intro", "")
+            if "Chào bạn" in current_intro:
+                st.session_state.reply_templates = DEFAULT_STREAMLIT_REPLY_TEMPLATES
 
         # ── Loaded documents (with persistence) ─────────────────
         if 'loaded_documents' not in st.session_state:
@@ -174,6 +180,16 @@ class SessionStateManager:
 
         if 'retrieval_comparison' not in st.session_state:
             st.session_state.retrieval_comparison = {}
+
+        # ── RAG Pipeline Type ───────────────────────────────────
+        if 'rag_type' not in st.session_state:
+            st.session_state.rag_type = saved_settings.get('rag_type', DEFAULT_RAG_TYPE)
+
+        if 'compare_rag' not in st.session_state:
+            st.session_state.compare_rag = saved_settings.get('compare_rag', False)
+
+        if 'rag_comparison_result' not in st.session_state:
+            st.session_state.rag_comparison_result = None
 
 
 def _clear_chat_history():
@@ -301,6 +317,8 @@ def main():
                 "use_hybrid_search": st.session_state.get("use_hybrid_search", False),
                 "use_rerank": st.session_state.get("use_rerank", False),
                 "retrieval_k": st.session_state.get("retrieval_k", 3),
+                "rag_type": st.session_state.get("rag_type", DEFAULT_RAG_TYPE),
+                "compare_rag": st.session_state.get("compare_rag", False),
             })
             st.rerun()
 
