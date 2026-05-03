@@ -94,29 +94,73 @@ class DocumentService:
     
     def load_document(self, file_path: str) -> List[Document]:
         """
-        Load a document from file, extract rich metadata, and split into chunks.
+        LOAD MỘT TÀI LIỆU, TRÍCH XUẤT METADATA GIÀU, VÀ CHIA THÀNH CHUNKS.
 
-        **Enriched metadata fields:**
-        - `source`: Absolute path to the file
-        - `source_file`: File name only (without path)
-        - `file_type`: File extension (e.g., `.pdf`)
-        - `uploaded_at`: ISO timestamp when the file was loaded
-        - `chunk_index`: Index of the chunk within the document (0-based)
-        - `chunk_start`: Character offset where the chunk begins
-        - `chunk_end`: Character offset where the chunk ends
-        - `file_size_bytes`: Size of the original file in bytes
-        - `total_chunks`: Total number of chunks created from this document
-        - `page_count`: Number of pages/sections in the document (PDF only)
-        - `title`: Document title derived from filename
+        ĐÂY LÀ HÀM DÙNG ĐỂ XỬ LÝ MỘT FILE PDF/DOCX/TXT SAU KHI UPLOAD.
+
+        QUY TRÌNH 4 BƯỚC:
+
+          BƯỚC 1: ĐỌC FILE
+            - Sử dụng loader phù hợp (PDFPlumberLoader, Docx2txtLoader, TextLoader)
+            - Trả về danh sách LCDocument (định dạng LangChain Document)
+
+          BƯỚC 2: CHIA THÀNH CHUNKS
+            - Sử dụng SimpleTextSplitter để chia văn bản thành các đoạn nhỏ
+            - Mỗi chunk có độ dài = chunk_size (VD: 1000 ký tự)
+            - Các chunk có overlap = chunk_overlap (VD: 100 ký tự) để đảm bảo tính liên tục
+
+          BƯỚC 3: BỔ SUNG METADATA GIÀU
+            - Mỗi chunk được thêm các trường metadata:
+              * source: đường dẫn đầy đủ đến file (VD: "/uploads/report.pdf")
+              * source_file: chỉ tên file (VD: "report.pdf")
+              * file_type: phần mở rộng (VD: ".pdf")
+              * uploaded_at: thời gian upload (định dạng ISO)
+              * chunk_index: vị trí chunk trong file (0, 1, 2, ...)
+              * chunk_start, chunk_end: vị trí bắt đầu/kết thúc trong văn bản gốc
+              * file_size_bytes, file_size_mb: kích thước file
+              * title: tiêu đề document (được rút gọn từ tên file)
+              * page_count: số trang/section
+              * total_chunks: tổng số chunks tạo ra từ file này
+
+          BƯỚC 4: TRẢ VỀ DANH SÁCH DOCUMENT
+            - Trả về List[Document] (domain model, không phải LCDocument)
+            - Mỗi Document chứa: content (nội dung chunk) + metadata (thông tin phong phú)
+
+        TẠI SAO METADATA QUAN TRỌNG?
+          Metadata được sử dụng để:
+            1. LỌC (filter): lọc tài liệu theo tên file hoặc loại file
+            2. HIỂN THỊ: hiển thị thông tin tài liệu nguồn trong chat
+            3. CITATION: tạo trích dẫn như "[report.pdf, page 3, chunk 2]"
+            4. DEBUG: kiểm tra xem tài liệu nào được upload khi nào, kích thước bao nhiêu
+
+        VÍ DỤ METADATA:
+          Document chunk 3 của file "report.pdf":
+          {
+            "content": "Nội dung trang 3...",
+            "metadata": {
+              "source": "/uploads/report.pdf",
+              "source_file": "report.pdf",
+              "file_type": ".pdf",
+              "uploaded_at": "2026-05-03T23:30:00",
+              "chunk_index": 3,
+              "chunk_start": 3000,
+              "chunk_end": 4000,
+              "file_size_bytes": 1048576,
+              "file_size_mb": 1.0,
+              "title": "report",
+              "page_count": 10,
+              "total_chunks": 15
+            }
+          }
 
         Args:
-            file_path: Path to the document file
+            file_path: Đường dẫn đầy đủ đến file (VD: "/uploads/report.pdf")
 
         Returns:
-            List of Document objects (one per chunk)
+            List[Document]: Danh sách Document objects (mỗi object = 1 chunk)
 
         Raises:
-            DocumentLoadError: If loading fails
+            DocumentLoadError: Nếu load thất bại (file không tồn tại, format không hỗ trợ, ...)
         """
         try:
             logger.info(f"Loading document: {file_path}")

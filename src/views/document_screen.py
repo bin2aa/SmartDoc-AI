@@ -110,7 +110,48 @@ class DocumentScreen:
                 st.code(str(UPLOAD_DIR))
 
     def _render_uploaded_document_table(self):
-        """Render uploaded documents with rich metadata and filter controls."""
+        """HIỂN THỊ DANH SÁCH TÀI LIỆU ĐÃ UPLOAD + CÁC Ô LỌC (FILTER).
+
+        ĐÂY LÀ GIAO DIỆN CHO TÍNH NĂNG MULTI-DOCUMENT RAG + METADATA FILTERING.
+
+        GỒM 4 PHẦN CHÍNH:
+
+        PHẦN 1: Ô LỌC (FILTER CONTROLS)
+          2 multiselect để lọc tài liệu:
+            - Filter by Document: lọc theo TÊN FILE
+            - Filter by File Type: lọc theo LOẠI FILE (.pdf, .docx, .txt)
+
+          Các filter này được LƯƯ vào session_state:
+            - st.session_state.active_source_filters: danh sách tên file được lọc
+            - st.session_state.active_file_type_filters: danh sách loại file được lọc
+
+          Khi người dùng bấm "Ask" trong Chat:
+            ChatController.process_query() sẽ đọc các filter này:
+              metadata_filters = {
+                  "source_files": selected_sources,
+                  "file_types": selected_file_types,
+              }
+            Vector store sẽ chỉ trả về tài liệu thỏa mãn filter.
+
+        PHẦN 2: THỂ HIỆN TÀI LIỆU (DOCUMENT CARDS)
+          Hiển thị card cho từng tài liệu:
+            - Icon theo loại file (PDF: 📕, DOCX: 📘, TXT: 📄)
+            - Màu sắc theo loại file (PDF: đỏ, DOCX: xanh dương, TXT: xanh lục)
+            - Thông tin: tên, kích thước, số trang, số chunks, thời gian upload
+            - Nếu tài liệu đang được lọc -> hiển thị "✅ Active filter"
+
+        PHẦN 3: BẢNG THỐNG KÊ (SUMMARY STATS)
+          5 cột thống kê:
+            - Files: tổng số file
+            - Size: tổng kích thước
+            - Pages: tổng số trang
+            - Chunks: tổng số chunks
+            - Active: số file đang được lọc / tổng số file
+
+        PHẦN 4: BẢNG CHI TIẾT (EXPANDER)
+          Bảng data để xem tất cả tài liệu:
+            - Tên, loại, kích thước, số trang, số chunks, thời gian upload
+        """
         loaded_documents = st.session_state.get("loaded_documents", [])
         if not loaded_documents:
             return
@@ -118,9 +159,21 @@ class DocumentScreen:
         st.markdown("---")
         st.subheader("📚 Uploaded Documents")
 
+        # === PHẦN 1: Ô LỌC (FILTER CONTROLS) ===
+        # Trích xuất danh sách TÊN FILE từ loaded_documents
+        # VD: loaded_documents = [{name: "report.pdf"}, {name: "notes.docx"}]
+        #     source_names = ["notes.docx", "report.pdf"] (đã sort)
         source_names = sorted({item.get("name", "") for item in loaded_documents if item.get("name")})
+
+        # Trích xuất danh sách LOẠI FILE (.pdf, .docx, .txt)
+        # VD: file_types = [".docx", ".pdf"] (đã sort)
         file_types = sorted({item.get("file_type", "") for item in loaded_documents if item.get("file_type")})
 
+        # Ô MULTISELECT: Filter by Document
+        # Cho phép chọn nhiều file cùng lúc
+        # default = các file đang được lọc (từ session_state)
+        # Sau khi chọn, lưu vào session_state.active_source_filters
+        # Khi người dùng hỏi trong Chat -> ChatController đọc session_state này để filter
         selected_sources = st.multiselect(
             "🔍 Filter by Document",
             options=source_names,
@@ -129,6 +182,9 @@ class DocumentScreen:
         )
         st.session_state.active_source_filters = selected_sources
 
+        # Ô MULTISELECT: Filter by File Type
+        # Cho phép lọc theo loại file (.pdf, .docx, .txt)
+        # Lưu vào session_state.active_file_type_filters
         selected_types = st.multiselect(
             "📎 Filter by File Type",
             options=file_types,

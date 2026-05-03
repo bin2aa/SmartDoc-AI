@@ -43,50 +43,96 @@ class ChatController:
     
     def process_query(self, query: str, k: int = 3) -> Tuple[str, List[Document]]:
         """
-        Process user query and return response.
-        
+        XỬ LÝ CÂU HỎI NGƯỜI DÙNG - ENTRY POINT CHÍNH CỦA CHAT.
+
+        ĐÂY LÀ HÀM ĐƯỢC GỌI KHI NGƯỜI DÙNG NHẬP CÂU HỎI TRONG CHAT.
+
+        QUY TRÌNH 6 BƯỚC:
+
+          BƯỚC 1: VALIDATE (Kiểm tra)
+            - Kiểm tra câu hỏi không được rỗng
+
+          BƯỚC 2: ĐỌC CÁC TUỲ CHỌN (TỪ SESSION STATE)
+            - use_hybrid_search: có bật hybrid search không?
+            - use_rerank: có bật cross-encoder rerank không?
+            - retrieval_k: số tài liệu muốn lấy về
+            - active_source_filters: lọc theo tên file nào?
+            - active_file_type_filters: lọc theo loại file nào?
+
+          BƯỚC 3: RETRIEVAL (TÌM TÀI LIỆU)
+            - Gọi vector_service.search() để tìm tài liệu liên quan
+            - Sử dụng tuỳ chọn: hybrid, rerank, metadata_filters
+            - Lưu retrieval_stats để hiển thị trong UI
+
+          BƯỚC 4: SO SÁNH HYBRID vs VECTOR (nếu hybrid bật)
+            - Nếu hybrid được bật, chạy thêm vector-only để so sánh
+            - Lưu kết quả so sánh vào session_state
+
+          BƯỚC 5: BUILD CONTEXT (Xây dựng ngữ cảnh)
+            - Hợp nhất nội dung các tài liệu thành một chuỗi context
+            - Định dạng: [Source: filename, page X, chunk Y]\nnoi_dung
+
+          BƯỚC 6: GENERATE RESPONSE (Tạo câu trả lời)
+            - Gọi LLM để tạo câu trả lời từ context
+            - Trả về câu trả lời + danh sách tài liệu nguồn
+
         Args:
-            query: User's question
-            k: Number of documents to retrieve
-            
+            query: Câu hỏi người dùng (VD: "làm thế nào để cài đặt python")
+            k: Số lượng tài liệu mặc định muốn lấy về
+
         Returns:
-            Tuple of (answer, source_documents)
-            
+            Tuple: (câu trả lời từ AI, danh sách tài liệu nguồn)
+
         Raises:
-            ValueError: If query is empty
-            VectorStoreError: If vector store not initialized
-            LLMConnectionError: If LLM generation fails
+            ValueError: Nếu câu hỏi rỗng
+            VectorStoreError: Nếu chưa upload tài liệu
+            LLMConnectionError: Nếu không kết nối được LLM
         """
-        # Validation
+        # === BƯỚC 1: VALIDATE ===
         if not query or not query.strip():
             logger.warning("Empty query received")
             raise ValueError("Query cannot be empty")
-        
+
         logger.info(f"Processing query: {query[:50]}...")
 
+        # === BƯỚC 2: ĐỌC CÁC TUỲ CHỌN TỪ SESSION STATE ===
+        # Session state là "biến toàn cục" trong Streamlit
+        # Các toggle trong Settings -> Retrieval Strategy sẽ lưu tại đây
         use_hybrid = bool(st.session_state.get("use_hybrid_search", False))
         use_rerank = bool(st.session_state.get("use_rerank", False))
         retrieval_k = int(st.session_state.get("retrieval_k", k))
+
+        # Lấy filter từ Document screen (multiselect)
         selected_sources = st.session_state.get("active_source_filters", [])
         selected_file_types = st.session_state.get("active_file_type_filters", [])
 
+        # Đóng gói metadata filters
         metadata_filters: Dict[str, Any] = {}
         if selected_sources:
             metadata_filters["source_files"] = selected_sources
         if selected_file_types:
             metadata_filters["file_types"] = selected_file_types
 
+        # Rewrite câu hỏi ngắn (follow-up) để cải thiện retrieval
         rewritten_query = self._rewrite_query(query)
+        # Lấy ngữ cảnh cuộc hội thoại (4 lượt gần nhất)
         conversation_context = self._conversation_context(max_turns=4)
-        
-        # Check if vector store is initialized
+
+        # === BƯỚC 3: RETRIEVAL ===
         if self.vector_service is None or not self.vector_service.is_initialized:
             logger.error("Vector store not initialized")
             raise VectorStoreError("Please upload documents first")
-        
-        # Retrieve relevant documents
+
         try:
             if hasattr(self.vector_service, "search"):
+                # GỌI HYBRID SEARCH
+                # search() nhận các tham số:
+                #   - query: câu hỏi (đã được rewrite nếu là follow-up)
+                #   - k: số tài liệu muốn lấy
+                #   - metadata_filters: lọc theo file/loại file
+                #   - use_hybrid: True = kết hợp vector + BM25
+                #   - rerank: True = sử dụng cross-encoder
+                #   - fetch_k: số candidate lấy trước khi lọc (mặc định 20)
                 relevant_docs, retrieval_stats = self.vector_service.search(
                     query=rewritten_query,
                     k=retrieval_k,
@@ -96,6 +142,7 @@ class ChatController:
                     fetch_k=max(retrieval_k * 4, 20),
                 )
             else:
+                # Vector service cũ, không có search() -> fallback về similarity_search()
                 relevant_docs = self.vector_service.similarity_search(rewritten_query, k=retrieval_k)
                 retrieval_stats = {
                     "use_hybrid": False,
@@ -103,18 +150,24 @@ class ChatController:
                     "results": len(relevant_docs),
                 }
 
+            # Lưu stats để hiển thị trong UI (Chat -> Retrieval Metrics)
             st.session_state.last_retrieval_stats = retrieval_stats
 
+            # === BƯỚC 4: SO SÁNH HYBRID vs PURE VECTOR ===
+            # Nếu hybrid được bật, chạy thêm vector-only để so sánh
+            # Kết quả so sánh sẽ hiển thị trong UI
             if use_hybrid and hasattr(self.vector_service, "search"):
+                # Chạy lại retrieval nhưng không sử dụng hybrid
                 vector_only_docs, vector_stats = self.vector_service.search(
                     query=rewritten_query,
                     k=retrieval_k,
                     metadata_filters=metadata_filters,
-                    use_hybrid=False,
+                    use_hybrid=False,    # Chỉ vector, không BM25
                     use_bm25_only=False,
                     rerank=False,
                     fetch_k=max(retrieval_k * 4, 20),
                 )
+                # Lưu kết quả so sánh để hiển thị trong UI
                 st.session_state.retrieval_comparison = {
                     "vector_results": len(vector_only_docs),
                     "hybrid_results": len(relevant_docs),
@@ -127,13 +180,14 @@ class ChatController:
         except Exception as e:
             logger.error(f"Document retrieval failed: {e}")
             raise
-        
-        # If no documents found
+
+        # === BƯỚC 5: BUILD CONTEXT ===
         if not relevant_docs:
             logger.warning("No relevant documents found")
             return "I don't have enough information to answer this question.", []
-        
-        # Build context
+
+        # Hợp nhất các tài liệu thành một chuỗi context
+        # Định dạng: [Source: filename, page X, chunk Y]\nnoi_dung
         context = "\n\n".join(
             [
                 f"[Source: {doc.get_citation()} | chunk={doc.metadata.get('chunk_index', 'n/a')}]\n{doc.content}"
@@ -141,13 +195,15 @@ class ChatController:
             ]
         )
         logger.debug(f"Context length: {len(context)} characters")
-        
-        # Create prompt
+
+        # === BƯỚC 6: GENERATE RESPONSE ===
+        # Xây dựng prompt cho LLM
         prompt = self._build_prompt(context, query, conversation_context)
-        
-        # Generate response
+
         try:
+            # Gọi LLM (Ollama) để tạo câu trả lời
             response = self.llm_service.generate(prompt)
+            # Đánh dấu những tài liệu được sử dụng trong câu trả lời (cho UI hightlight)
             self._mark_used_chunks(answer=response, sources=relevant_docs)
             logger.info("Response generated successfully")
             return response, relevant_docs
@@ -294,23 +350,45 @@ ANSWER:"""
 
     def benchmark_retrieval(self, query: str, k: int = 5) -> Dict[str, Any]:
         """
-        So sánh performance giữa pure vector, pure BM25 và hybrid search.
+        SO SÁNH HIỆU SUẤT GIỮA 3 CHIẾN LƯỢC RETRIEVAL.
 
-        Benchmark chạy trên vector_service hiện tại và trả về:
-        - Recall@K cho mỗi chiến lược
-        - Thời gian phản hồi (ms)
-        - Số document duy nhất được trả về (coverage)
-        - Chiến lược tốt nhất theo từng metric
+        HÀM NÀY ĐƯỢC GỌI TỪ Settings -> Retrieval Strategy -> Run Retrieval Benchmark.
+
+        NÓ GỌI RetrievalBenchmark.run() ĐỂ:
+          1. Chạy 3chiến lược: Vector, BM25, Hybrid trên cùng câu hỏi
+          2. Tính 3 metrics: Recall@K, Speed, Coverage
+          3. Tìm chiến lược tốt nhất theo từng metric
+          4. Trả về kết quả để hiển thị trong bảng so sánh UI
+
+        CƠ CHẾ HOẠT ĐỘNG:
+          - Lấy vector_service hiện tại (đã có tài liệu)
+          - Tạo RetrievalBenchmark với vector_service đó
+          - Gọi benchmark.run(query, k) để chạy so sánh
+          - Tra ve ket qua
+
+        VI DU KET QUA TRA VE:
+          {
+            "strategies": {
+              "vector": {"recall_at_k": 0.45, "time_ms": 45, "unique_sources": 3},
+              "bm25":    {"recall_at_k": 0.38, "time_ms": 12, "unique_sources": 2},
+              "hybrid":  {"recall_at_k": 0.61, "time_ms": 58, "unique_sources": 4},
+            },
+            "best": {
+              "recall": "hybrid",
+              "speed": "bm25",
+              "coverage": "hybrid",
+            }
+          }
 
         Args:
-            query: Câu hỏi dùng để test retrieval
-            k: Số document lấy về (mặc định 5)
+            query: Cau hoi dung de so sanh
+            k: So document lay ve (mac dinh 5)
 
         Returns:
-            Dict chứa kết quả benchmark của cả 3 chiến lược
+            Dict chua ket qua benchmark cua ca 3 chien luong
 
         Raises:
-            VectorStoreError: Nếu vector store chưa được khởi tạo
+            VectorStoreError: Neu vector store chua duoc khoi tao
         """
         if self.vector_service is None or not self.vector_service.is_initialized:
             raise VectorStoreError("Vector store chua duoc khoi tao. Vui long upload tai lieu truoc.")

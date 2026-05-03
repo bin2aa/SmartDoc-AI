@@ -60,7 +60,74 @@ class DocumentController:
             return False
 
     def upload_and_process_many(self, uploaded_files: List[Any]) -> Dict[str, Any]:
-        """Upload and process multiple documents in one action."""
+        """
+        UPLOAD VÀ XỬ LÝ NHIỀU TÀI LIỆU CÙNG LÚC.
+
+        ĐÂY LÀ HÀM CHÍNH CHO TÍNH NĂNG MULTI-DOCUMENT RAG.
+
+        SO VỚI upload_and_process():
+          - upload_and_process(): xử lý 1 file
+          - upload_and_process_many(): xử lý NHIỀU file cùng lúc (list)
+
+        QUY TRÌNH 4 BƯỚC CHO MỖI FILE:
+
+          BƯỚC 1: VALIDATE (Kiểm tra)
+            - Kiểm tra định dạng file (.pdf, .docx, .txt)
+            - Kiểm tra kích thước (< MAX_FILE_SIZE_MB)
+
+          BƯỚC 2: SAVE (Lưu)
+            - Lưu file tạm thời vào UPLOAD_DIR
+            - VD: uploaded_files = [file1.pdf, file2.pdf]
+            - Save: UPLOAD_DIR/file1.pdf, UPLOAD_DIR/file2.pdf
+
+          BƯỚC 3: LOAD & CHUNK (Đọc & Chia nhỏ)
+            - Gọi DocumentService.load_document() để:
+              * Đọc nội dung file
+              * Chia thành chunks
+              * Bổ sung rich metadata
+            - VD: file1.pdf (10 trang) -> 15 chunks
+
+          BƯỚC 4: ADD TO VECTOR STORE (Thêm vào Vector Store)
+            - Gọi vector_service.add_documents() để:
+              * Embed từng chunk = vector 768chiều
+              * Lưu vào FAISS index
+              * Rebuild BM25 index (vì có tài liệu mới)
+            - VD: 15 chunks -> 15 vectors trong FAISS
+
+        SAU KHI XỬ LÝ TẤT CẢ FILE:
+          - Lưu metadata vào session_state.loaded_documents (hiển thị trong UI)
+          - Danh sách metadata chứa:
+            * name: tên file
+            * path: đường dẫn đã save
+            * file_type: loại file
+            * chunks: số chunks tạo ra
+            * file_size_bytes, file_size_mb: kích thước
+            * uploaded_at: thời gian upload
+            * page_count: số trang
+            * title: tiêu đề
+
+        VÍ DỤ:
+          User upload 3 file: [report.pdf (1MB, 10 trang), notes.docx (0.5MB, 5 trang), readme.txt (10KB, 1 trang)]
+          Kết quả:
+            - report.pdf: 15 chunks -> 15 vectors
+            - notes.docx: 8 chunks -> 8 vectors
+            - readme.txt: 2 chunks -> 2 vectors
+            - Tổng: 25 chunks, 25 vectors trong FAISS
+            - loaded_documents: [
+                {"name": "report.pdf", "chunks": 15, "page_count": 10, ...},
+                {"name": "notes.docx", "chunks": 8, "page_count": 5, ...},
+                {"name": "readme.txt", "chunks": 2, "page_count": 1, ...},
+              ]
+
+        Args:
+            uploaded_files: Danh sách các file đã upload (Streamlit file_uploader)
+
+        Returns:
+            Dict:
+              - success_count: số file xử lý thành công
+              - failed: danh sách file thất bại
+              - total: tổng số file
+        """
         if not uploaded_files:
             return {"success_count": 0, "failed": []}
 

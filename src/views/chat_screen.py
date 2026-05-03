@@ -84,19 +84,50 @@ class ChatScreen:
     
     def _render_sources(self, sources: List[Document], msg_idx: int):
         """
-        Render source citations with rich document metadata.
+        HIỂN THỊ THÔNG TIN TÀI LIỆU NGUỒN (CITATIONS).
 
-        Hiển thị thông tin chi tiết về document nguồn:
-        - Tên file + icon theo loại file
-        - Số trang
-        - Chunk index
-        - Kích thước file
-        - Ngày upload
-        - Đoạn preview có highlight từ khóa
+        PHẦN NÀY CHỈ RA TÀI LIỆU NÀO ĐƯỢC SỬ DỤNG ĐỂ TRẢ LỜI CÂU HỎI.
 
-        Args:
-            sources: List of source documents
-            msg_idx: Message index for unique key generation
+        CHO PHÉP NGƯỜI DÙNG:
+          - Xem tài liệu nào được sử dụng
+          - Đọc nội dung chi tiết của từng tài liệu
+          - Xem thông tin metadata (tên file, trang, kích thước, thời gian upload)
+
+        THÔNG TIN HIỂN THỊ CHO MỖI TÀI LIỆU:
+          1. Icon + Màu sắc theo loại file:
+             - PDF: 📕 (màu đỏ)
+             - DOCX: 📘 (màu xanh dương)
+             - TXT: 📄 (màu xanh lục)
+          2. Tiêu đề (title): tên file đã được format
+          3. Thông tin nguồn:
+             - Tên file gốc (VD: "report.pdf")
+             - Số trang (VD: "trang 3")
+             - Chỉ số chunk (VD: "chunk 2")
+             - Điểm rerank (nếu có) (VD: "relevance = 0.852")
+          4. Thông tin khác:
+             - Kích thước file
+             - Thời gian upload
+          5. Nội dung chunk (text area có thể xem)
+          6. Preview (đoạn văn bản đầu tiên)
+
+        BẢN THÂN METADATA TRONG Document:
+          Khi tài liệu được upload, metadata đã được bổ sung với:
+            - source_file: tên file
+            - file_type: loại file
+            - page: số trang
+            - chunk_index: vị trí chunk
+            - file_size_mb: kích thước
+            - uploaded_at: thời gian upload
+            - title: tiêu đề
+            - used_in_answer: đã được sử dụng trong câu trả lời chưa
+            - rerank_score: điểm cross-encoder (nếu có rerank)
+
+        VÍ DỤ:
+          Câu hỏi: "tóm tắt bài báo này"
+          Tài liệu 1: report.pdf, trang 3, chunk 2, relevance = 0.852
+            -> Nội dung: "Bài báo này nghiên cứu về..."
+          Tài liệu 2: notes.docx, trang 1, chunk 0, relevance = 0.723
+            -> Nội dung: "Các ghi chú của tác giả..."
         """
         with st.expander("📚 Nguồn tài liệu"):
             for src_idx, source in enumerate(sources, 1):

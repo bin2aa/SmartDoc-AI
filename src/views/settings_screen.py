@@ -127,7 +127,38 @@ class SettingsScreen:
                 st.warning("No benchmark result. Upload documents and provide a query first.")
 
     def _render_retrieval_settings(self):
-        """Render retrieval strategy options including hybrid and rerank."""
+        """CÀI ĐẶT CHIẾN LƯỢC RETRIEVAL (TÌM KIẾM).
+
+        ĐÂY LÀ GIAO DIỆN CHO TÍNH NĂNG HYBRID SEARCH + CROSS-ENCODER RERANK.
+
+        GỒM 3 PHẦN CHÍNH:
+
+        PHẦN 1: 3 Ô TOGGLE/SELECTBOX
+          - Hybrid Search Toggle: bật/tắt hybrid (vector + BM25)
+          - Cross-Encoder Toggle: bật/tắt rerank
+          - Top-K Selectbox: số lượng tài liệu lấy về (3, 5, 8, 10)
+
+          Các tuỳ chọn này được LƯƯ vào session_state:
+            - st.session_state.use_hybrid_search = True/False
+            - st.session_state.use_rerank = True/False
+            - st.session_state.retrieval_k = 3/5/8/10
+
+          Khi người dùng hỏi trong Chat -> ChatController đọc các session_state này:
+            use_hybrid = st.session_state.get("use_hybrid_search", False)
+            use_rerank = st.session_state.get("use_rerank", False)
+            retrieval_k = st.session_state.get("retrieval_k", 3)
+
+        PHẦN 2: RETRIEVAL BENCHMARK
+          - Nhập câu hỏi test
+          - Chọn Top-K
+          - Bấm "Run Retrieval Benchmark" để so sánh 3chiến lược
+
+        PHẦN 3: KẾT QUẢ BENCHMARK (hiển thị sau khi bấm Run)
+          - Bảng so sánh: Vector, BM25, Hybrid
+          - 3 cột: Recall@K, Speed (ms), Coverage
+          - Hiển thị chiến lược tốt nhất theo từng metric
+          - Chi tiết top-3 tài liệu của mỗi chiến lược
+        """
         st.subheader("🔎 Retrieval Strategy")
 
         col1, col2, col3 = st.columns(3)
