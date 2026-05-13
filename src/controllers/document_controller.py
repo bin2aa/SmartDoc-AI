@@ -116,6 +116,14 @@ class DocumentController:
                     )
                     continue
 
+                if not documents:
+                    failed.append(uploaded_file.name)
+                    st.error(
+                        f"No readable text found in {uploaded_file.name}. "
+                        "If this is a scanned document, enable OCR and try again."
+                    )
+                    continue
+
                 self.vector_service.add_documents(documents)
 
                 # Lưu trạng thái is_ocr vào session để hỗ trợ reload khi benchmark
