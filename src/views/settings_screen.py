@@ -8,6 +8,7 @@ from src.views.components import UIComponents, icon
 from src.views.chunk_settings import render_chunk_settings
 from src.views.retrieval_settings import render_retrieval_settings
 from src.views.llm_settings import render_llm_settings, render_system_info, render_rerank_benchmark
+from src.views.ocr_settings import render_ocr_settings
 from src.services.persistence_service import save_settings
 from src.utils.constants import (
     DEFAULT_CHUNK_SIZE,
@@ -16,6 +17,12 @@ from src.utils.constants import (
     DEFAULT_NUM_CTX,
     DEFAULT_NUM_PREDICT,
     DEFAULT_KEEP_ALIVE,
+    DEFAULT_OCR_LANG,
+    DEFAULT_OCR_DPI,
+    DEFAULT_OCR_PSM,
+    DEFAULT_OCR_OEM,
+    DEFAULT_OCR_PREPROCESS,
+    DEFAULT_OCR_AUTO_PDF,
     RAG_TYPE_STANDARD,
 )
 from src.utils.logger import setup_logger
@@ -87,6 +94,14 @@ class SettingsScreen:
 
         st.markdown("---")
 
+        # OCR Configuration
+        render_ocr_settings(
+            self.components,
+            self._persist_current_settings,
+        )
+
+        st.markdown("---")
+
         # System Info
         render_system_info(self.components)
 
@@ -105,6 +120,12 @@ class SettingsScreen:
             "retrieval_k": st.session_state.get("retrieval_k", 3),
             "rag_type": st.session_state.get("rag_type", RAG_TYPE_STANDARD),
             "compare_rag": st.session_state.get("compare_rag", False),
+            "ocr_lang": st.session_state.get("ocr_lang", DEFAULT_OCR_LANG),
+            "ocr_dpi": st.session_state.get("ocr_dpi", DEFAULT_OCR_DPI),
+            "ocr_psm": st.session_state.get("ocr_psm", DEFAULT_OCR_PSM),
+            "ocr_oem": st.session_state.get("ocr_oem", DEFAULT_OCR_OEM),
+            "ocr_preprocess": st.session_state.get("ocr_preprocess", DEFAULT_OCR_PREPROCESS),
+            "ocr_auto_pdf": st.session_state.get("ocr_auto_pdf", DEFAULT_OCR_AUTO_PDF),
         }
         save_settings(settings)
         logger.info("Settings persisted to disk")

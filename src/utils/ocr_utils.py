@@ -7,7 +7,8 @@ Falls back gracefully when dependencies are unavailable.
 
 import os
 import platform
-from typing import Optional
+import shutil
+from typing import Dict, List
 
 from src.utils.logger import setup_logger
 
@@ -55,11 +56,25 @@ OS_NAME = platform.system()
 TESSERACT_CMD = os.getenv("TESSERACT_CMD", None)
 POPPLER_PATH = os.getenv("POPPLER_PATH", None)
 
+
+def _resolve_poppler_from_path() -> str:
+    """Resolve Poppler bin directory from PATH if available."""
+    candidate = shutil.which("pdftoppm")
+    if not candidate:
+        return ""
+    return os.path.dirname(candidate)
+
 if OS_NAME == "Windows":
     if not TESSERACT_CMD:
         TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    if POPPLER_PATH and not os.path.exists(POPPLER_PATH):
+        logger.warning(
+            "POPPLER_PATH is set but invalid: %s. Falling back to PATH lookup.",
+            POPPLER_PATH,
+        )
+        POPPLER_PATH = ""
     if not POPPLER_PATH:
-        POPPLER_PATH = r"C:\poppler-25.12.0\Library\bin"
+        POPPLER_PATH = _resolve_poppler_from_path()
 
 if OCR_AVAILABLE and TESSERACT_CMD:
     import pytesseract as _pytesseract
@@ -92,6 +107,46 @@ def _assess_quality(text: str) -> str:
     return "good"
 
 
+def summarize_text_quality(text: str, min_alpha_ratio: float = 0.3) -> Dict[str, float]:
+    """Return basic quality metrics for a text string."""
+    stripped = (text or "").strip()
+    total_chars = len(stripped)
+    if total_chars == 0:
+        return {"total_chars": 0, "alpha_ratio": 0.0}
+    alpha_chars = sum(1 for c in stripped if c.isalpha())
+    alpha_ratio = alpha_chars / total_chars
+    return {"total_chars": total_chars, "alpha_ratio": alpha_ratio}
+
+
+def is_text_quality_good(
+    text: str,
+    min_chars: int = 200,
+    min_alpha_ratio: float = 0.3,
+) -> bool:
+    """Heuristic check for usable extracted text (non-OCR)."""
+    metrics = summarize_text_quality(text, min_alpha_ratio=min_alpha_ratio)
+    if metrics["total_chars"] < min_chars:
+        return False
+    return metrics["alpha_ratio"] >= min_alpha_ratio
+
+
+def _preprocess_image(img, enable: bool):
+    """Apply lightweight preprocessing to improve OCR on scans."""
+    if not enable:
+        return img
+
+    from PIL import ImageFilter, ImageOps
+
+    gray = ImageOps.grayscale(img)
+    enhanced = ImageOps.autocontrast(gray)
+    denoised = enhanced.filter(ImageFilter.MedianFilter(size=3))
+
+    # Simple binarization to sharpen text edges
+    threshold = 170
+    binary = denoised.point(lambda x: 255 if x > threshold else 0, mode="1")
+    return binary
+
+
 def get_availability_info() -> dict:
     """Return OCR availability status for UI display."""
     return {
@@ -105,7 +160,19 @@ def get_availability_info() -> dict:
 
 # ── Main extraction function ────────────────────────────────────
 
-def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
+def extract_pages_with_ocr(
+    file_path: str,
+    lang: str = "vie+eng",
+    dpi: int = 300,
+    psm: int = 6,
+    oem: int = 3,
+    preprocess: bool = True,
+) -> List[Dict[str, object]]:
+    """
+    Extract text by page from a scanned PDF or image file using Tesseract OCR.
+
+    Returns a list of dicts: {"page": int, "text": str}.
+    """
     """
     Extract text from a scanned PDF or image file using Tesseract OCR.
 
@@ -135,7 +202,7 @@ def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
 
     extension = os.path.splitext(file_path)[1].lower()
     filename = os.path.basename(file_path)
-    extracted_text = ""
+    pages_out: List[Dict[str, object]] = []
     total_chars = 0
     page_count = 0
 
@@ -146,7 +213,7 @@ def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
     try:
         # ── Case 1: PDF file ──────────────────────────────────
         if extension == ".pdf":
-            pdf_kwargs = {"dpi": 300}
+            pdf_kwargs = {"dpi": dpi}
             if POPPLER_PATH and OS_NAME == "Windows":
                 if not os.path.exists(POPPLER_PATH):
                     raise FileNotFoundError(
@@ -163,8 +230,9 @@ def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
                 page_num = i + 1
                 logger.info("[OCR] Processing page %d/%d...", page_num, page_count)
 
+                processed = _preprocess_image(page_image, preprocess)
                 text = _pytesseract.image_to_string(
-                    page_image, lang=lang, config="--psm 6"
+                    processed, lang=lang, config=f"--psm {psm} --oem {oem}"
                 )
                 page_text = text.strip() if text else ""
                 quality = _assess_quality(page_text)
@@ -185,8 +253,7 @@ def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
                         page_num, page_count,
                     )
 
-                extracted_text += f"\n\n--- Page {page_num} ---\n\n"
-                extracted_text += text if text else ""
+                pages_out.append({"page": page_num, "text": text or ""})
                 total_chars += page_chars
 
         # ── Case 2: Image file (PNG, JPG, etc.) ───────────────
@@ -195,7 +262,10 @@ def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
             img = Image.open(file_path)
             page_count = 1
 
-            text = _pytesseract.image_to_string(img, lang=lang, config="--psm 6")
+            processed = _preprocess_image(img, preprocess)
+            text = _pytesseract.image_to_string(
+                processed, lang=lang, config=f"--psm {psm} --oem {oem}"
+            )
             page_text = text.strip() if text else ""
             quality = _assess_quality(page_text)
             page_chars = len(page_text)
@@ -211,11 +281,12 @@ def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
             else:
                 logger.warning("[OCR] Image: NO TEXT EXTRACTED — image may be blank or unreadable")
 
-            extracted_text += text if text else ""
+            pages_out.append({"page": 1, "text": text or ""})
             total_chars = page_chars
 
         # ── Final summary ─────────────────────────────────────
-        overall_quality = _assess_quality(extracted_text)
+        combined = "\n".join(page.get("text", "") for page in pages_out)
+        overall_quality = _assess_quality(combined)
 
         logger.info("-" * 50)
         logger.info(
@@ -240,9 +311,39 @@ def extract_text_with_ocr(file_path: str, lang: str = "vie+eng") -> str:
 
         logger.info("=" * 50)
 
-        return extracted_text.strip()
+        return pages_out
 
     except Exception as e:
         logger.error("[OCR] ❌ FAILED for '%s': %s", filename, str(e))
         logger.error("[OCR] Error type: %s", type(e).__name__)
         raise RuntimeError(f"OCR processing failed for '{filename}': {str(e)}") from e
+
+
+def extract_text_with_ocr(
+    file_path: str,
+    lang: str = "vie+eng",
+    dpi: int = 300,
+    psm: int = 6,
+    oem: int = 3,
+    preprocess: bool = True,
+) -> str:
+    """
+    Extract text from a scanned PDF or image file using Tesseract OCR.
+
+    Returns:
+        Extracted text string (may be empty if OCR reads nothing)
+    """
+    pages = extract_pages_with_ocr(
+        file_path=file_path,
+        lang=lang,
+        dpi=dpi,
+        psm=psm,
+        oem=oem,
+        preprocess=preprocess,
+    )
+    combined = []
+    for page in pages:
+        page_num = page.get("page")
+        text = page.get("text", "")
+        combined.append(f"\n\n--- Page {page_num} ---\n\n{text}")
+    return "".join(combined).strip()

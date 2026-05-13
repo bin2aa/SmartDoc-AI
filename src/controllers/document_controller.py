@@ -8,7 +8,17 @@ from src.services.vector_store_service import AbstractVectorStoreService
 from src.services.persistence_service import save_faiss_index, save_loaded_docs, clear_all_state
 from src.utils.logger import setup_logger
 from src.utils.exceptions import DocumentLoadError
-from src.utils.constants import UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB
+from src.utils.constants import (
+    UPLOAD_DIR,
+    ALLOWED_EXTENSIONS,
+    MAX_FILE_SIZE_MB,
+    DEFAULT_OCR_LANG,
+    DEFAULT_OCR_DPI,
+    DEFAULT_OCR_PSM,
+    DEFAULT_OCR_OEM,
+    DEFAULT_OCR_PREPROCESS,
+    DEFAULT_OCR_AUTO_PDF,
+)
 
 logger = setup_logger(__name__)
 
@@ -74,6 +84,8 @@ class DocumentController:
         failed: List[str] = []
         loaded_docs = st.session_state.get("loaded_documents", [])
 
+        ocr_config = self._build_ocr_config_from_session()
+
         for uploaded_file in uploaded_files:
             try:
                 if not self._validate_file(uploaded_file, use_ocr=use_ocr):
@@ -85,11 +97,23 @@ class DocumentController:
 
                 try:
                     # Truyền cờ use_ocr xuống Service
-                    documents = self.document_service.load_document(file_path, use_ocr=use_ocr)
+                    documents = self.document_service.load_document(
+                        file_path,
+                        use_ocr=use_ocr,
+                        ocr_config=ocr_config,
+                    )
                     logger.info("Loaded %s chunks from %s", len(documents), uploaded_file.name)
                 except DocumentLoadError as load_error:
                     failed.append(uploaded_file.name)
                     st.error(f"❌ Cannot load {uploaded_file.name}: {str(load_error)}")
+                    continue
+
+                if not documents:
+                    failed.append(uploaded_file.name)
+                    st.error(
+                        f"No readable text found in {uploaded_file.name}. "
+                        "If this is a scanned document, enable OCR and try again."
+                    )
                     continue
 
                 self.vector_service.add_documents(documents)
@@ -104,7 +128,15 @@ class DocumentController:
                         "path": file_path,
                         "file_type": Path(uploaded_file.name).suffix.lower(),
                         "chunks": len(documents),
-                        "is_ocr": use_ocr,
+                        "is_ocr": first_chunk_meta.get("is_ocr", False),
+                        "ocr_config": {
+                            "lang": first_chunk_meta.get("ocr_lang"),
+                            "dpi": first_chunk_meta.get("ocr_dpi"),
+                            "psm": first_chunk_meta.get("ocr_psm"),
+                            "oem": first_chunk_meta.get("ocr_oem"),
+                            "preprocess": first_chunk_meta.get("ocr_preprocess"),
+                            "auto_pdf": first_chunk_meta.get("ocr_auto_pdf"),
+                        },
                         "file_size_bytes": first_chunk_meta.get("file_size_bytes", 0),
                         "file_size_mb": first_chunk_meta.get("file_size_mb", 0.0),
                         "uploaded_at": first_chunk_meta.get("uploaded_at", ""),
@@ -247,12 +279,17 @@ class DocumentController:
                     doc_path = doc_meta.get("path")
                     # Lấy cờ OCR từ session để đọc lại file chính xác
                     is_ocr = doc_meta.get("is_ocr", False)
+                    ocr_config = doc_meta.get("ocr_config") or self._build_ocr_config_from_session()
                     
                     if not doc_path:
                         continue
                         
                     # Truyền is_ocr vào hàm load
-                    chunks = self.document_service.load_document(doc_path, use_ocr=is_ocr)
+                    chunks = self.document_service.load_document(
+                        doc_path,
+                        use_ocr=is_ocr,
+                        ocr_config=ocr_config,
+                    )
                     total_chunks += len(chunks)
                     for chunk in chunks:
                         content = chunk.content.lower()
@@ -274,3 +311,15 @@ class DocumentController:
 
         results.sort(key=lambda row: row["accuracy_proxy"], reverse=True)
         return results
+
+    @staticmethod
+    def _build_ocr_config_from_session() -> Dict[str, Any]:
+        """Build OCR config dict from Streamlit session state."""
+        return {
+            "lang": st.session_state.get("ocr_lang", DEFAULT_OCR_LANG),
+            "dpi": st.session_state.get("ocr_dpi", DEFAULT_OCR_DPI),
+            "psm": st.session_state.get("ocr_psm", DEFAULT_OCR_PSM),
+            "oem": st.session_state.get("ocr_oem", DEFAULT_OCR_OEM),
+            "preprocess": st.session_state.get("ocr_preprocess", DEFAULT_OCR_PREPROCESS),
+            "auto_pdf": st.session_state.get("ocr_auto_pdf", DEFAULT_OCR_AUTO_PDF),
+        }
