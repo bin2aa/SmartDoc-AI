@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from langchain_community.document_loaders import PDFPlumberLoader, Docx2txtLoader, TextLoader
 from langchain_core.documents import Document as LCDocument
 from src.models.document_model import Document
@@ -11,7 +11,22 @@ from src.utils.exceptions import DocumentLoadError
 from src.utils.constants import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 
 # Import OCR with availability check
-from src.utils.ocr_utils import extract_text_with_ocr, OCR_AVAILABLE, get_availability_info
+from src.utils.ocr_utils import (
+    extract_pages_with_ocr,
+    OCR_AVAILABLE,
+    get_availability_info,
+    is_text_quality_good,
+)
+from src.utils.constants import (
+    DEFAULT_OCR_LANG,
+    DEFAULT_OCR_DPI,
+    DEFAULT_OCR_PSM,
+    DEFAULT_OCR_OEM,
+    DEFAULT_OCR_PREPROCESS,
+    DEFAULT_OCR_AUTO_PDF,
+    DEFAULT_OCR_MIN_TEXT_CHARS,
+    DEFAULT_OCR_MIN_ALPHA_RATIO,
+)
 
 logger = setup_logger(__name__)
 
@@ -95,7 +110,12 @@ class DocumentService:
         )
         logger.info(f"DocumentService initialized (chunk_size={chunk_size}, overlap={chunk_overlap})")
 
-    def load_document(self, file_path: str, use_ocr: bool = False) -> List[Document]:
+    def load_document(
+        self,
+        file_path: str,
+        use_ocr: bool = False,
+        ocr_config: Optional[Dict[str, Any]] = None,
+    ) -> List[Document]:
         """
         Load a document from file, extract rich metadata, and split into chunks.
 
@@ -128,6 +148,13 @@ class DocumentService:
 
             extension = Path(file_path).suffix.lower()
             lc_docs = []
+            ocr_config = ocr_config or {}
+            ocr_lang = ocr_config.get("lang", DEFAULT_OCR_LANG)
+            ocr_dpi = int(ocr_config.get("dpi", DEFAULT_OCR_DPI))
+            ocr_psm = int(ocr_config.get("psm", DEFAULT_OCR_PSM))
+            ocr_oem = int(ocr_config.get("oem", DEFAULT_OCR_OEM))
+            ocr_preprocess = bool(ocr_config.get("preprocess", DEFAULT_OCR_PREPROCESS))
+            ocr_auto_pdf = bool(ocr_config.get("auto_pdf", DEFAULT_OCR_AUTO_PDF))
 
             # --- KHAI BÁO CÁC ĐUÔI ẢNH ĐƯỢC PHÉP CHẠY OCR ---
             image_extensions = ['.png', '.jpg', '.jpeg']
@@ -136,6 +163,7 @@ class DocumentService:
             # (Là file PDF VÀ người dùng có bật OCR) HOẶC (Bản chất nó là file ảnh)
             is_image_file = extension in image_extensions
             is_pdf_ocr = use_ocr and extension == '.pdf'
+            used_ocr = False
 
             if is_pdf_ocr or is_image_file:
                 # Guard: check OCR availability before attempting
@@ -155,10 +183,81 @@ class DocumentService:
                             f"Install with: pip install {' '.join(ocr_info['missing_deps'])}"
                         )
 
-                logger.info("[OCR] Starting OCR extraction for: %s (type=%s)", file_path, extension)
-                extracted_text = extract_text_with_ocr(file_path)
+                if is_pdf_ocr and ocr_auto_pdf:
+                    try:
+                        loader = DocumentLoaderFactory.create_loader(file_path)
+                        lc_docs = loader.load()
+                        combined_text = "".join(doc.page_content or "" for doc in lc_docs)
+                        if is_text_quality_good(
+                            combined_text,
+                            min_chars=DEFAULT_OCR_MIN_TEXT_CHARS,
+                            min_alpha_ratio=DEFAULT_OCR_MIN_ALPHA_RATIO,
+                        ):
+                            logger.info(
+                                "[OCR] PDF has usable text; skipping OCR (auto mode)"
+                            )
+                        else:
+                            logger.info(
+                                "[OCR] Low PDF text detected; falling back to OCR (auto mode)"
+                            )
+                            ocr_pages = extract_pages_with_ocr(
+                                file_path,
+                                lang=ocr_lang,
+                                dpi=ocr_dpi,
+                                psm=ocr_psm,
+                                oem=ocr_oem,
+                                preprocess=ocr_preprocess,
+                            )
+                            lc_docs = [
+                                LCDocument(
+                                    page_content=page.get("text", ""),
+                                    metadata={"source": file_path, "page": page.get("page")},
+                                )
+                                for page in ocr_pages
+                            ]
+                            used_ocr = True
+                    except Exception as pdf_error:
+                        logger.warning(
+                            "[OCR] Auto-detect failed; falling back to OCR: %s",
+                            pdf_error,
+                        )
+                        ocr_pages = extract_pages_with_ocr(
+                            file_path,
+                            lang=ocr_lang,
+                            dpi=ocr_dpi,
+                            psm=ocr_psm,
+                            oem=ocr_oem,
+                            preprocess=ocr_preprocess,
+                        )
+                        lc_docs = [
+                            LCDocument(
+                                page_content=page.get("text", ""),
+                                metadata={"source": file_path, "page": page.get("page")},
+                            )
+                            for page in ocr_pages
+                        ]
+                        used_ocr = True
+                else:
+                    logger.info("[OCR] Starting OCR extraction for: %s (type=%s)", file_path, extension)
+                    ocr_pages = extract_pages_with_ocr(
+                        file_path,
+                        lang=ocr_lang,
+                        dpi=ocr_dpi,
+                        psm=ocr_psm,
+                        oem=ocr_oem,
+                        preprocess=ocr_preprocess,
+                    )
+                    lc_docs = [
+                        LCDocument(
+                            page_content=page.get("text", ""),
+                            metadata={"source": file_path, "page": page.get("page")},
+                        )
+                        for page in ocr_pages
+                    ]
+                    used_ocr = True
 
-                if not extracted_text or not extracted_text.strip():
+                combined = "".join(doc.page_content or "" for doc in lc_docs)
+                if not combined or not combined.strip():
                     logger.warning(
                         "[OCR] ⚠️ No text extracted from '%s' — skipping file. "
                         "The document may be blank or unreadable.",
@@ -170,15 +269,12 @@ class DocumentService:
                         f"Try a different language pack or higher DPI setting."
                     )
 
-                char_count = len(extracted_text.strip())
+                char_count = len(combined.strip())
                 logger.info(
                     "[OCR] ✅ Successfully extracted %d chars from '%s'",
                     char_count, file_path,
                 )
-
-                # Bọc text vào LCDocument để tương thích hoàn toàn với logic cũ
-                lc_docs = [LCDocument(page_content=extracted_text, metadata={"source": file_path})]
-            else:
+            if not lc_docs:
                 # Logic cũ bình thường: Create appropriate loader
                 loader = DocumentLoaderFactory.create_loader(file_path)
                 lc_docs = loader.load()
@@ -188,6 +284,16 @@ class DocumentService:
             # Split into chunks
             chunks = self.text_splitter.split_documents(lc_docs)
             logger.info(f"Split into {len(chunks)} chunks")
+
+            if not chunks:
+                logger.warning(
+                    "No text chunks produced for '%s' — document may be image-only or empty",
+                    file_path,
+                )
+                raise DocumentLoadError(
+                    f"No readable text found in '{Path(file_path).name}'. "
+                    "If this is a scanned document, enable OCR and try again."
+                )
 
             # Extract metadata for enriched fields
             source_path = Path(file_path)
@@ -210,7 +316,13 @@ class DocumentService:
                         'file_type': source_path.suffix.lower(),
                         'uploaded_at': upload_time,
                         'chunk_index': idx,
-                        'is_ocr': True if (is_pdf_ocr or is_image_file) else False,
+                        'is_ocr': used_ocr,
+                        'ocr_lang': ocr_lang,
+                        'ocr_dpi': ocr_dpi,
+                        'ocr_psm': ocr_psm,
+                        'ocr_oem': ocr_oem,
+                        'ocr_preprocess': ocr_preprocess,
+                        'ocr_auto_pdf': ocr_auto_pdf,
                         "file_size_bytes": file_size_bytes,
                         "file_size_mb": round(file_size_bytes / (1024 * 1024), 2),
                         "title": title,

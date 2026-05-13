@@ -53,7 +53,10 @@ class DocumentScreen:
         else:
             enable_ocr = st.checkbox(
                 "Enable OCR (Read text from Images / Scanned PDFs)",
-                help="Check this to process .png, .jpg, or scanned .pdf files. Note: Processing will take longer."
+                help=(
+                    "Check this to process .png, .jpg, or scanned .pdf files. "
+                    "If Auto OCR is enabled in Settings, PDFs with real text skip OCR."
+                )
             )
 
         # Mở rộng danh sách đuôi file được phép trên UI nếu bật OCR
