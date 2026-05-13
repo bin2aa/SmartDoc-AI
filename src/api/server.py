@@ -240,7 +240,7 @@ async def list_documents() -> DocumentsListResponse:
     Returns:
         DocumentsListResponse with list of loaded documents
     """
-    logger.info("📋 Document list requested")
+    logger.info("Document list requested")
     
     return DocumentsListResponse(
         total_documents=len(loaded_documents),
@@ -256,14 +256,16 @@ async def clear_storage() -> ClearResponse:
     Returns:
         ClearResponse with confirmation
     """
-    logger.warning("🗑️ Clear storage requested")
+    logger.warning("Clear storage requested")
     
     try:
         if vector_service:
             vector_service.clear_store()
         
         loaded_documents.clear()
+        
         logger.info("Vector store and documents cleared")
+        
         return ClearResponse(
             status="success",
             message="Vector store and all documents cleared successfully"
@@ -289,7 +291,7 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
     Raises:
         HTTPException: If query processing fails
     """
-    logger.info(f"❓ Query received: {request.query[:50]}...")
+    logger.info(f"Query received: {request.query[:50]}...")
     
     try:
         # Check if vector store is ready
@@ -326,7 +328,9 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
             )
             for doc in source_docs
         ]
+        
         logger.info("Query processed successfully")
+        
         return QueryResponse(
             query=request.query,
             answer=answer,
@@ -336,7 +340,7 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
             confidence_level=confidence_level,
             self_evaluation=self_evaluation,
         )
-
+        
     except HTTPException:
         raise
     except VectorStoreError as e:
@@ -361,7 +365,7 @@ async def batch_query(request: BatchQueryRequest) -> List[QueryResponse]:
     Returns:
         List of QueryResponse objects
     """
-    logger.info(f"📦 Batch query received with {len(request.queries)} questions")
+    logger.info(f"Batch query received with {len(request.queries)} questions")
     
     results = []
     errors = []
@@ -433,11 +437,11 @@ async def startup_event():
     logger.info("SmartDocAI API Server starting...")
     logger.info("=" * 50)
     
-    logger.info(f"📚 Vector Store Status: {'Ready' if vector_service and vector_service.vector_store else 'Not initialized'}")
-    logger.info(f"🤖 LLM Service Status: {'Ready' if llm_service else 'Not connected'}")
-    logger.info(f"📄 Document Service Status: {'Ready' if document_service else 'Not initialized'}")
-    logger.info(f"📍 Upload Directory: {UPLOAD_DIR}")
-    logger.info(f"🌐 API Docs: http://localhost:8001/api/docs")
+    logger.info(f"Vector Store Status: {'Ready' if vector_service and vector_service.vector_store else 'Not initialized'}")
+    logger.info(f"LLM Service Status: {'Ready' if llm_service else 'Not connected'}")
+    logger.info(f"Document Service Status: {'Ready' if document_service else 'Not initialized'}")
+    logger.info(f"Upload Directory: {UPLOAD_DIR}")
+    logger.info(f"API Docs: http://localhost:8001/api/docs")
     logger.info("=" * 50)
 
 

@@ -8,7 +8,6 @@ from src.views.document_table import render_uploaded_document_table
 from src.utils.logger import setup_logger
 from src.utils.constants import ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB
 from src.utils.ocr_utils import OCR_AVAILABLE, get_availability_info
-from src.utils import ui_icons as icons
 
 logger = setup_logger(__name__)
 
@@ -32,7 +31,8 @@ class DocumentScreen:
 
     def render(self):
         """Render the document screen."""
-        st.title(f"{icons.DESCRIPTION} Document management")
+        st.markdown(f"## {icon('description')} Document Management", unsafe_allow_html=True)
+
         st.markdown("""
         Upload your documents here. Supported formats: **PDF, DOCX, TXT**
 
@@ -46,17 +46,14 @@ class DocumentScreen:
             ocr_info = get_availability_info()
             missing = ", ".join(ocr_info["missing_deps"])
             st.warning(
-                f"{icons.WARNING} **OCR unavailable** — missing dependencies: `{missing}`.  \n"
+                f"⚠️ **OCR unavailable** — missing dependencies: `{missing}`.  \n"
                 f"Install with: `pip install {' '.join(ocr_info['missing_deps'])}`"
             )
             enable_ocr = False
         else:
             enable_ocr = st.checkbox(
                 "Enable OCR (Read text from Images / Scanned PDFs)",
-                help=(
-                    "Check this to process .png, .jpg, or scanned .pdf files. "
-                    "If Auto OCR is enabled in Settings, PDFs with real text skip OCR."
-                )
+                help="Check this to process .png, .jpg, or scanned .pdf files. Note: Processing will take longer."
             )
 
         # Mở rộng danh sách đuôi file được phép trên UI nếu bật OCR
@@ -77,7 +74,7 @@ class DocumentScreen:
             col1, col2, col3 = st.columns([1, 2, 1])
 
             with col2:
-                if st.button("📤 Process Documents", use_container_width=True, type="primary"):
+                if st.button("Process Documents", use_container_width=True, type="primary"):
                     with self.components.loading_spinner("Processing documents..."):
                         # --- TRUYỀN BIẾN OCR XUỐNG CONTROLLER ---
                         result = self.controller.upload_and_process_many(uploaded_files, use_ocr=enable_ocr)
@@ -99,7 +96,8 @@ class DocumentScreen:
 
     def _render_document_info(self):
         """Display document processing information."""
-        st.subheader(f"{icons.INFO} Information")
+        st.subheader("Information")
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
@@ -123,18 +121,18 @@ class DocumentScreen:
 
     def _render_advanced_actions(self):
         """Render advanced document actions."""
-        st.subheader("⚙️ Advanced Actions")
+        st.subheader("Advanced Actions")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            confirm_clear = st.checkbox("⚠️ Confirm clear all documents and index")
-            if st.button("🗑️ Clear Vector Store", use_container_width=True, disabled=not confirm_clear):
+            confirm_clear = st.checkbox("Confirm clear all documents and index")
+            if st.button("Clear Vector Store", use_container_width=True, disabled=not confirm_clear):
                 if confirm_clear:
                     self.controller.clear_vector_store()
                     st.rerun()
 
         with col2:
-            if st.button("ℹ️ View Upload Folder", use_container_width=True):
+            if st.button("View Upload Folder", use_container_width=True):
                 from src.utils.constants import UPLOAD_DIR
                 st.code(str(UPLOAD_DIR))
